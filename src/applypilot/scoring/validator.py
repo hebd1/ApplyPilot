@@ -14,6 +14,12 @@ lenient -- banned words ignored; only fabrication and required structure checked
 import re
 import logging
 
+from applypilot.scoring.employment import (
+    company_in_header,
+    validate_employment_structure,
+    validate_experience_company_lines,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -114,7 +120,7 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     warnings: list[str] = []
 
     # Required keys — always checked regardless of mode
-    for key in ("title", "summary", "skills", "experience", "projects", "education"):
+    for key in ("title", "summary", "skills", "experience", "education"):
         if key not in data or not data[key]:
             errors.append(f"Missing required field: {key}")
     if errors:
@@ -123,41 +129,90 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     # Collect all text for bulk checks
     all_text_parts: list[str] = [data["summary"]]
 
-    # Skills: check for fabrication (always enforced)
+    # Skills: watchlist fabrication + soft allowlist vs skills_boundary
+    allowed_skills = _build_skills_set(profile)
+    related_extras = {
+        "kubernetes", "k8s", "redis", "postgres", "postgresql", "mysql",
+        "graphql", "grpc", "protobuf", "ci/cd", "gitlab", "github actions",
+        "nodejs", "node.js", "express", "fastapi", "django", "flask",
+        "react", "vue", "next.js", "webpack", "vite",
+    }
+    allowed_plus = allowed_skills | related_extras
     if isinstance(data["skills"], dict):
         skills_text = " ".join(str(v) for v in data["skills"].values()).lower()
         for fake in FABRICATION_WATCHLIST:
             if len(fake) <= 2:
                 continue
-            if fake in skills_text:
-                errors.append(f"Fabricated skill: '{fake}'")
+            if fake not in skills_text:
+                continue
+            # Allow if the skill (or a close token) is in the user's declared boundary
+            if any(fake in allowed or allowed in fake for allowed in allowed_skills):
+                continue
+            errors.append(f"Fabricated skill: '{fake}'")
 
-    # Experience: preserved companies must be present (always enforced)
+        # Soft allowlist: flag tokens outside boundary ∪ related extras
+        skill_tokens: list[str] = []
+        for val in data["skills"].values():
+            skill_tokens.extend(re.split(r"[,;/|]", str(val)))
+        unknown: list[str] = []
+        for tok in skill_tokens:
+            t = tok.strip().lower()
+            if len(t) < 3:
+                continue
+            if any(t in a or a in t for a in allowed_plus):
+                continue
+            # Skip generic category words
+            if t in {"and", "or", "with", "using", "etc", "frameworks", "languages", "tools"}:
+                continue
+            unknown.append(tok.strip())
+        if unknown:
+            msg = f"Skills outside skills_boundary (soft): {', '.join(unknown[:8])}"
+            if mode == "strict":
+                errors.append(msg)
+            else:
+                warnings.append(msg)
+
+    # Experience: preserved companies must each have their own entry (not merged)
     resume_facts = profile.get("resume_facts", {})
     preserved_companies = resume_facts.get("preserved_companies", [])
 
+    errors.extend(validate_employment_structure(data, profile))
+
     if isinstance(data["experience"], list):
+        headers = []
+        for e in data["experience"]:
+            if not isinstance(e, dict):
+                continue
+            company = str(e.get("company", "")).strip()
+            header = str(e.get("header", "")).strip()
+            headers.append(company or header)
         for company in preserved_companies:
-            has_company = any(
-                company.lower() in str(e.get("header", "")).lower()
-                for e in data["experience"]
-            )
-            if not has_company:
-                errors.append(f"Company '{company}' missing from experience")
+            if not any(company_in_header(company, h) for h in headers):
+                from applypilot.scoring.employment import company_in_entry
+                if not any(company_in_entry(company, e) for e in data["experience"] if isinstance(e, dict)):
+                    errors.append(
+                        f"Company '{company}' missing from experience "
+                        "(must be its own entry, not merged with another employer)"
+                    )
         for entry in data["experience"]:
             for b in entry.get("bullets", []):
                 all_text_parts.append(b)
 
-    # Projects: collect bullets
-    if isinstance(data["projects"], list):
-        for entry in data["projects"]:
+    # Projects: collect bullets (optional)
+    projects = data.get("projects")
+    if isinstance(projects, list):
+        for entry in projects:
             for b in entry.get("bullets", []):
                 all_text_parts.append(b)
 
     # Education: preserved school must be present (always enforced)
     preserved_school = resume_facts.get("preserved_school", "")
     if preserved_school:
-        edu = str(data.get("education", ""))
+        edu_data = data.get("education", "")
+        if isinstance(edu_data, dict):
+            edu = str(edu_data.get("school", ""))
+        else:
+            edu = str(edu_data)
         if preserved_school.lower() not in edu.lower():
             errors.append(f"Education '{preserved_school}' missing")
 
@@ -207,10 +262,12 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
         "SUMMARY": ["summary", "professional summary", "profile"],
         "TECHNICAL SKILLS": ["technical skills", "skills", "tech stack", "core skills", "technologies"],
         "EXPERIENCE": ["experience", "work experience", "professional experience"],
-        "PROJECTS": ["projects", "personal projects", "key projects", "selected projects"],
+        "PROJECTS": ["projects", "personal projects", "key projects", "selected projects", "selected project experience"],
         "EDUCATION": ["education", "academic background"],
     }
     for section, variants in section_variants.items():
+        if section == "PROJECTS":
+            continue  # optional — project work may live inside experience bullets
         if not any(v in text_lower for v in variants):
             errors.append(f"Missing required section: {section} (or variant)")
 
@@ -219,15 +276,38 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
     if full_name and full_name.lower() not in text_lower:
         warnings.append(f"Name '{full_name}' missing -- will be injected")
 
-    # 3. Check companies preserved
+    # 3. Check companies preserved (each as its own entry, not merged)
+    from applypilot.scoring.employment import is_merged_company_header
+
     for company in resume_facts.get("preserved_companies", []):
         if company.lower() not in text_lower:
             errors.append(f"Company '{company}' missing -- cannot remove real experience")
 
-    # 4. Check projects preserved
+    in_experience = False
+    for line in text.split("\n"):
+        upper = line.strip().upper()
+        if upper == "EXPERIENCE" or upper == "PROFESSIONAL EXPERIENCE":
+            in_experience = True
+            continue
+        if in_experience and upper in ("PROJECTS", "EDUCATION", "TECHNICAL SKILLS", "SUMMARY"):
+            in_experience = False
+        if in_experience and " at " in line and is_merged_company_header(line):
+            errors.append(
+                f"Merged employer in experience line: '{line.strip()}' "
+                "(use separate entries for Kount Inc and Equifax)"
+            )
+
+    errors.extend(validate_experience_company_lines(text, profile))
+
+    # 4. Check projects preserved (work-product + personal)
     for project in resume_facts.get("preserved_projects", []):
         if project.lower() not in text_lower:
-            warnings.append(f"Project '{project}' not found -- may have been renamed")
+            warnings.append(f"Work-product project '{project}' not found -- may have been renamed")
+    for entry in resume_facts.get("personal_projects", []) or []:
+        name = entry.get("name", "") if isinstance(entry, dict) else str(entry)
+        name = str(name).strip()
+        if name and name.lower() not in text_lower:
+            warnings.append(f"Personal project '{name}' not found -- may have been dropped")
 
     # 5. Check school preserved
     preserved_school = resume_facts.get("preserved_school", "")
@@ -242,7 +322,8 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
     if phone and phone not in text:
         warnings.append("Phone missing -- will be injected")
 
-    # 7. Scan TECHNICAL SKILLS section for fabricated tools
+    # 7. Scan TECHNICAL SKILLS section for fabricated tools (skip skills in boundary)
+    allowed_skills = _build_skills_set(profile)
     skills_start = text_lower.find("technical skills")
     skills_end = text_lower.find("experience", skills_start) if skills_start != -1 else -1
     if skills_start != -1 and skills_end != -1:
@@ -250,8 +331,11 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
         for fake in FABRICATION_WATCHLIST:
             if len(fake) <= 2:
                 continue
-            if fake in skills_block:
-                errors.append(f"FABRICATED SKILL in Technical Skills: '{fake}'")
+            if fake not in skills_block:
+                continue
+            if any(fake in allowed or allowed in fake for allowed in allowed_skills):
+                continue
+            errors.append(f"FABRICATED SKILL in Technical Skills: '{fake}'")
 
     # 8. Scan full document for fabrication watchlist items not in original
     if original_text:
@@ -324,22 +408,30 @@ def validate_cover_letter(text: str, mode: str = "normal") -> dict:
             else:  # normal
                 warnings.append(msg)
 
-    # 3. Word count
+    # 3. Word count — professional letters are longer than the old 250-word cap
     words = len(text.split())
-    if mode == "strict" and words > 250:
-        errors.append(f"Too long ({words} words). Max 250.")
-    elif mode == "normal" and words > 275:
-        warnings.append(f"Long ({words} words). Target 250.")
-    # lenient: no word count check
+    if mode == "strict" and words < 300:
+        errors.append(f"Too short ({words} words). Target 350-500.")
+    elif mode == "strict" and words > 550:
+        errors.append(f"Too long ({words} words). Max 550.")
+    elif mode == "normal" and words < 280:
+        warnings.append(f"Short ({words} words). Target 350-500.")
+    elif mode == "normal" and words > 600:
+        warnings.append(f"Long ({words} words). Target 350-500.")
 
     # 4. LLM self-talk — always an error regardless of mode
     found_leaks = [p for p in LLM_LEAK_PHRASES if p in text_lower]
     if found_leaks:
         errors.append(f"LLM self-talk: '{found_leaks[0]}'")
 
-    # 5. Must start with "Dear" — always checked (preamble should have been stripped)
+    # 5. Structure checks
     stripped = text.strip()
-    if not stripped.lower().startswith("dear"):
-        errors.append("Must start with 'Dear Hiring Manager,'")
+    if not stripped.lower().startswith("subject:"):
+        if not stripped.lower().startswith("dear"):
+            errors.append("Must start with 'Subject:' line (then 'Dear ...').")
+    if "dear" not in stripped.lower():
+        errors.append("Must include a 'Dear ...' salutation.")
+    if "warm regards" not in stripped.lower() and "sincerely" not in stripped.lower():
+        warnings.append("Should close with 'Warm regards,' or 'Sincerely,'.")
 
     return {"passed": len(errors) == 0, "errors": errors, "warnings": warnings}

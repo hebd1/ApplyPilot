@@ -76,13 +76,20 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
 # -- Site configuration from YAML --------------------------------------------
 
 def load_sites() -> list[dict]:
-    """Load scraping target sites from config/sites.yaml."""
+    """Load scraping target sites from config/sites.yaml + Greenhouse boards."""
     path = CONFIG_DIR / "sites.yaml"
     if not path.exists():
         log.warning("sites.yaml not found at %s", path)
-        return []
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return data.get("sites", [])
+        sites: list[dict] = []
+    else:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        sites = list(data.get("sites", []) or [])
+
+    # Prefer ATS-friendly Greenhouse boards early in the scrape list.
+    greenhouse = config.load_greenhouse_boards()
+    if greenhouse:
+        sites = list(greenhouse) + sites
+    return sites
 
 
 def _store_jobs_filtered(
@@ -104,6 +111,12 @@ def _store_jobs_filtered(
         if not url:
             continue
         if not _location_ok(job.get("location"), accept_locs, reject_locs):
+            filtered += 1
+            continue
+        if config.title_is_excluded(job.get("title")):
+            filtered += 1
+            continue
+        if config.is_marketplace_url(url):
             filtered += 1
             continue
         try:

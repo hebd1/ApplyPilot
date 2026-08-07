@@ -225,8 +225,10 @@ def collect_detail_intelligence(page) -> dict:
 # -- Tier 1: JSON-LD extraction -----------------------------------------------
 
 def extract_from_json_ld(intel: dict) -> dict | None:
-    """Extract description and apply URL from JSON-LD JobPosting.
-    Returns {"full_description": str, "application_url": str|None} or None."""
+    """Extract description, apply URL, and employer from JSON-LD JobPosting.
+
+    Returns {"full_description", "application_url", "company"} or None.
+    """
 
     def find_job_posting(data):
         if isinstance(data, dict):
@@ -242,6 +244,16 @@ def extract_from_json_ld(intel: dict) -> dict | None:
                 result = find_job_posting(item)
                 if result:
                     return result
+        return None
+
+    def hiring_org_name(posting: dict) -> str | None:
+        org = posting.get("hiringOrganization")
+        if isinstance(org, dict):
+            name = org.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        if isinstance(org, str) and org.strip():
+            return org.strip()
         return None
 
     for ld in intel.get("json_ld", []):
@@ -270,6 +282,7 @@ def extract_from_json_ld(intel: dict) -> dict | None:
         return {
             "full_description": desc_clean,
             "application_url": apply_url,
+            "company": hiring_org_name(posting),
         }
 
     return None
@@ -530,9 +543,12 @@ PERMANENT_FAILURES = {404, 410, 451}
 
 def scrape_detail_page(page, url: str) -> dict:
     """Full cascade for one detail page."""
+    from applypilot.job_meta import infer_company_from_url
+
     result: dict = {
         "full_description": None,
         "application_url": None,
+        "company": None,
         "status": "error",
         "tier_used": None,
         "error": None,
@@ -570,6 +586,8 @@ def scrape_detail_page(page, url: str) -> dict:
             apply = extract_apply_url_deterministic(page)
             if apply:
                 result["application_url"] = apply
+        if not result.get("company"):
+            result["company"] = infer_company_from_url(result.get("application_url"))
         result["status"] = "ok" if result.get("application_url") else "partial"
         result["elapsed"] = time.time() - t0
         return result
@@ -581,6 +599,7 @@ def scrape_detail_page(page, url: str) -> dict:
     if desc:
         result["full_description"] = desc
         result["application_url"] = apply
+        result["company"] = infer_company_from_url(apply)
         result["tier_used"] = 2
         result["status"] = "ok" if apply else "partial"
         result["elapsed"] = time.time() - t0
@@ -592,6 +611,7 @@ def scrape_detail_page(page, url: str) -> dict:
     llm_result = extract_with_llm(page, url)
     result["full_description"] = llm_result.get("full_description")
     result["application_url"] = llm_result.get("application_url") or tier2_apply
+    result["company"] = infer_company_from_url(result.get("application_url"))
     result["tier_used"] = 3
 
     if result.get("full_description"):
@@ -665,8 +685,15 @@ def scrape_site_batch(
                     stats[status] += 1
                     conn.execute(
                         "UPDATE jobs SET full_description = ?, application_url = ?, "
+                        "company = COALESCE(?, company), "
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
-                        (result.get("full_description"), result.get("application_url"), now, url),
+                        (
+                            result.get("full_description"),
+                            result.get("application_url"),
+                            result.get("company"),
+                            now,
+                            url,
+                        ),
                     )
                 else:
                     stats["error"] += 1

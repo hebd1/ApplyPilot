@@ -31,7 +31,8 @@ pip install applypilot
 pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex
 applypilot init          # one-time setup: resume, profile, preferences, API keys
 applypilot doctor        # verify your setup — shows what's installed and what's missing
-applypilot run           # discover > enrich > score > tailor > cover letters
+applypilot run           # discover > enrich > score > tailor > cover letters > PDFs
+applypilot dashboard     # HTML job board with Apply / Resume / Cover links
 applypilot run -w 4      # same but parallel (4 threads for discovery/enrichment)
 applypilot apply         # autonomous browser-driven submission
 applypilot apply -w 3    # parallel apply (3 Chrome instances)
@@ -45,14 +46,48 @@ applypilot apply --dry-run  # fill forms without submitting
 ## Two Paths
 
 ### Full Pipeline (recommended)
-**Requires:** Python 3.11+, Node.js (for npx), Gemini API key (free), Claude Code CLI, Chrome
+**Requires:** Python 3.11+, Node.js (for npx), LLM API key, Chrome
 
 Runs all 6 stages, from job discovery to autonomous application submission. This is the full power of ApplyPilot.
 
 ### Discovery + Tailoring Only
-**Requires:** Python 3.11+, Gemini API key (free)
+**Requires:** Python 3.11+, LLM provider (Cursor Auto, Gemini, OpenAI, or local)
 
 Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cover letters. You submit applications manually with the AI-prepared materials.
+
+### Cursor Auto LLM + auto-apply (this checkout)
+
+This workspace includes a **Cursor Auto** LLM provider for scoring/tailoring/cover letters, and a **Cursor SDK auto-apply** backend for Stage 6 (default when `CURSOR_API_KEY` is set). Configure `CURSOR_API_KEY`, `LLM_MODEL=auto`, and optionally `APPLY_BACKEND=cursor` in `~/.applypilot/.env`.
+
+Always run via the editable install so you do not hit an older PATH binary:
+
+```bash
+.venv/bin/applypilot apply --dry-run -l 1   # fill form, do not submit
+.venv/bin/applypilot apply --headless -l 1  # real submit, one job
+```
+
+See [docs/cursor-llm.md](docs/cursor-llm.md), [docs/auto-apply.md](docs/auto-apply.md), and [AGENTS.md](AGENTS.md).
+
+### PDF output and dashboard (this checkout)
+
+Stages 4–5 produce **upload-ready PDFs** with professional formatting:
+
+- Resumes: `~/.applypilot/tailored_resumes/{LastName}_{Role}_{Site}_Resume.pdf`
+- Cover letters: `~/.applypilot/cover_letters/{LastName}_{Role}_{Site}_CoverLetter.pdf`
+
+Rendered via Playwright Chromium (with xhtml2pdf fallback). Install deps in WSL: `bash scripts/install_playwright.sh`
+
+Review jobs and open materials:
+
+```bash
+applypilot dashboard
+```
+
+Open from Windows: `\\wsl.localhost\Ubuntu\home\<user>\.applypilot\dashboard.html`
+
+See [docs/pdf-and-dashboard.md](docs/pdf-and-dashboard.md) and [docs/resume-tailoring.md](docs/resume-tailoring.md) (guardrails, layout, profile setup).
+
+To clear all jobs and materials and re-onboard: [docs/reset-onboard.md](docs/reset-onboard.md).
 
 ---
 
@@ -60,12 +95,12 @@ Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cov
 
 | Stage | What Happens |
 |-------|-------------|
-| **1. Discover** | Scrapes 5 job boards (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs) + 48 Workday employer portals + 30 direct career sites |
+| **1. Discover** | JobSpy (Indeed + ZipRecruiter by default) + Workday portals + smart-extract remote boards + curated Greenhouse boards — see [docs/discovery.md](docs/discovery.md) |
 | **2. Enrich** | Fetches full job descriptions via JSON-LD, CSS selectors, or AI-powered extraction |
 | **3. Score** | AI rates every job 1-10 based on your resume and preferences. Only high-fit jobs proceed |
-| **4. Tailor** | AI rewrites your resume per job: reorganizes, emphasizes relevant experience, adds keywords. Never fabricates |
-| **5. Cover Letter** | AI generates a targeted cover letter per job |
-| **6. Auto-Apply** | Claude Code navigates application forms, fills fields, uploads documents, answers questions, and submits |
+| **4. Tailor** | AI rewrites your resume per job, exports a styled **PDF** ready to upload |
+| **5. Cover Letter** | AI generates a targeted cover letter per job as a styled **PDF** |
+| **6. Auto-Apply** | Cursor SDK navigates forms, uploads materials, and submits |
 
 Each stage is independent. Run them all or pick what you need.
 
@@ -90,11 +125,10 @@ Each stage is independent. Run them all or pick what you need.
 |-----------|-------------|---------|
 | Python 3.11+ | Everything | Core runtime |
 | Node.js 18+ | Auto-apply | Needed for `npx` to run Playwright MCP server |
-| Gemini API key | Scoring, tailoring, cover letters | Free tier (15 RPM / 1M tokens/day) is enough |
+| LLM provider | Scoring, tailoring, cover letters | **Cursor Auto** (`CURSOR_API_KEY`), **Gemini** (free tier), OpenAI, or local (`LLM_URL`) |
 | Chrome/Chromium | Auto-apply | Auto-detected on most systems |
-| Claude Code CLI | Auto-apply | Install from [claude.ai/code](https://claude.ai/code) |
 
-**Gemini API key is free.** Get one at [aistudio.google.com](https://aistudio.google.com). OpenAI and local models (Ollama/llama.cpp) are also supported.
+**LLM providers:** This checkout prefers **Cursor Auto** (`CURSOR_API_KEY` from [cursor.com/dashboard/integrations](https://cursor.com/dashboard/integrations), `LLM_MODEL=auto`). Auto-apply also defaults to Cursor when that key is set (`APPLY_BACKEND=cursor`). Gemini is still supported ([aistudio.google.com](https://aistudio.google.com), free tier ~15 RPM). OpenAI and local models (Ollama/llama.cpp) also work.
 
 ### Optional
 
@@ -111,13 +145,13 @@ Each stage is independent. Run them all or pick what you need.
 All generated by `applypilot init`:
 
 ### `profile.json`
-Your personal data in one structured file: contact info, work authorization, compensation, experience, skills, resume facts (preserved during tailoring), and EEO defaults. Powers scoring, tailoring, and form auto-fill.
+Your personal data in one structured file: contact info, work authorization, compensation, experience, **`skills_boundary`** (allowed tools for validation), and **`resume_facts`** (preserved companies, employment history, metrics, education). Powers scoring, tailoring, and form auto-fill. See [resume-tailoring.md](docs/resume-tailoring.md) for `employment_history` and guardrail fields.
 
 ### `searches.yaml`
 Job search queries, target titles, locations, boards. Run multiple searches with different parameters.
 
 ### `.env`
-API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` (optional).
+API keys and runtime config: `CURSOR_API_KEY` (Cursor Auto + apply), `GEMINI_API_KEY`, `LLM_MODEL`, `CURSOR_MAX_CONCURRENCY` (optional), `CAPSOLVER_API_KEY` (optional), `CHROME_PATH` (optional), `APPLY_ALLOW_GMAIL_SEND` (optional; off by default — only enable with explicit consent to send mail).
 
 ### Package configs (shipped with ApplyPilot)
 - `config/employers.yaml` - Workday employer registry (48 preconfigured)
@@ -129,7 +163,7 @@ API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` 
 ## How Stages Work
 
 ### Discover
-Queries Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs via JobSpy. Scrapes 48 Workday employer portals (configurable in `employers.yaml`). Hits 30 direct career sites with custom extractors. Deduplicates by URL.
+Queries Indeed / ZipRecruiter via JobSpy (LinkedIn deprioritized — bot friction / weak apply URLs). Scrapes Workday employer portals (`employers.yaml`). Hits remote career sites plus curated Greenhouse boards (`greenhouse_boards.yaml`). Drops marketplace hosts (AuraOne, Turing, …) and excluded titles (junior, SDET, …) early. Stage 6 prefers Greenhouse/Workday and **skips Lever** for now (`skip_apply_hosts`). Deduplicates by URL. Details: [docs/discovery.md](docs/discovery.md).
 
 ### Enrich
 Visits each job URL and extracts the full description. 3-tier cascade: JSON-LD structured data, then CSS selector patterns, then AI-powered extraction for unknown layouts.
@@ -138,22 +172,20 @@ Visits each job URL and extracts the full description. 3-tier cascade: JSON-LD s
 AI scores every job 1-10 against your profile. 9-10 = strong match, 7-8 = good, 5-6 = moderate, 1-4 = skip. Only jobs above your threshold proceed to tailoring.
 
 ### Tailor
-Generates a custom resume per job: reorders experience, emphasizes relevant skills, incorporates keywords from the job description. Your `resume_facts` (companies, projects, metrics) are preserved exactly. The AI reorganizes but never fabricates.
+Generates a custom resume per job: matches the role title, rewrites summary and bullets for the posting, reorders skills, and exports a styled **one-page PDF**. Hard guardrails prevent merged employers, fabricated skills, and invented experience; reframing and keyword emphasis are encouraged. See [docs/resume-tailoring.md](docs/resume-tailoring.md).
 
 ### Cover Letter
 Writes a targeted cover letter per job referencing the specific company, role, and how your experience maps to their requirements.
 
 ### Auto-Apply
-Claude Code launches a Chrome instance, navigates to each application page, detects the form type, fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions with AI, and submits. A live dashboard shows progress in real-time.
+By default this checkout uses a **Cursor SDK agent + Playwright MCP** against Chrome CDP, with **Gmail MCP** for read-only OTP retrieval (`~/.gmail-mcp/`). The agent navigates the application page, fills fields, uploads the tailored resume (and cover letter when present), answers screening questions, and submits unless `--dry-run` is set.
 
-The Playwright MCP server is configured automatically at runtime per worker. No manual MCP setup needed.
+Gmail is **read-only by default** (search/read for verification codes only). **Never** update, delete, change Gmail settings, or send mail without explicit consent. Outbound mail alone can be opted in with `APPLY_ALLOW_GMAIL_SEND=1`; mutate/settings remain forbidden. See [docs/auto-apply.md](docs/auto-apply.md).
 
 ```bash
-# Utility modes (no Chrome/Claude needed)
-applypilot apply --mark-applied URL    # manually mark a job as applied
-applypilot apply --mark-failed URL     # manually mark a job as failed
-applypilot apply --reset-failed        # reset all failed jobs for retry
-applypilot apply --gen --url URL       # generate prompt file for manual debugging
+# Prefer the editable install
+.venv/bin/applypilot apply --dry-run -l 1
+.venv/bin/applypilot apply --headless -l 5 -w 1
 ```
 
 ---
@@ -185,6 +217,8 @@ applypilot dashboard                    # Open HTML results dashboard
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and PR guidelines.
+
+For this checkout's Cursor integration and WSL dev workflow, see [AGENTS.md](AGENTS.md) and [docs/development.md](docs/development.md).
 
 ---
 

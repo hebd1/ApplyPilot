@@ -58,6 +58,13 @@ def get_chrome_path() -> str:
             found = shutil.which(name)
             if found:
                 candidates.append(Path(found))
+        # Playwright-bundled Chromium (common on WSL without apt Chrome)
+        pw_cache = Path.home() / ".cache" / "ms-playwright"
+        if pw_cache.is_dir():
+            for chrome in sorted(pw_cache.glob("chromium-*/chrome-linux*/chrome"), reverse=True):
+                if chrome.is_file():
+                    candidates.append(chrome)
+                    break
 
     for c in candidates:
         if c and c.exists():
@@ -113,6 +120,26 @@ def load_search_config() -> dict:
     return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+def get_exclude_titles(cfg: dict | None = None) -> list[str]:
+    """Return case-insensitive title substrings to skip (from searches.yaml)."""
+    if cfg is None:
+        cfg = load_search_config() or {}
+    raw = cfg.get("exclude_titles") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(t).strip() for t in raw if str(t).strip()]
+
+
+def title_is_excluded(title: str | None, patterns: list[str] | None = None) -> bool:
+    """True when the job title contains any exclude_titles substring (case-insensitive)."""
+    if not title:
+        return False
+    if patterns is None:
+        patterns = get_exclude_titles()
+    title_l = title.lower()
+    return any(p.lower() in title_l for p in patterns)
+
+
 def load_sites_config() -> dict:
     """Load sites.yaml configuration (sites list, manual_ats, blocked, etc.)."""
     import yaml
@@ -120,6 +147,80 @@ def load_sites_config() -> dict:
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def load_marketplace_hosts() -> list[str]:
+    """Hosts that are contractor/AI-eval marketplaces, not employer ATS forms."""
+    cfg = load_sites_config()
+    raw = cfg.get("marketplace_hosts") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(h).strip().lower() for h in raw if str(h).strip()]
+
+
+def is_marketplace_url(url: str | None) -> bool:
+    """True when url/host matches a configured marketplace_hosts entry."""
+    if not url:
+        return False
+    url_l = str(url).lower()
+    return any(host in url_l for host in load_marketplace_hosts())
+
+
+def load_skip_apply_hosts() -> list[str]:
+    """ATS hosts to skip at Stage 6 (e.g. Lever while CapSolver cannot solve hCaptcha)."""
+    cfg = load_sites_config()
+    raw = cfg.get("skip_apply_hosts") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(h).strip().lower() for h in raw if str(h).strip()]
+
+
+def is_skip_apply_url(url: str | None) -> bool:
+    """True when Stage 6 should skip this apply URL (see skip_apply_hosts)."""
+    if not url:
+        return False
+    url_l = str(url).lower()
+    return any(host in url_l for host in load_skip_apply_hosts())
+
+
+def load_preferred_ats_hosts() -> list[str]:
+    """ATS host substrings preferred for Stage 6 queue ordering."""
+    cfg = load_sites_config()
+    raw = cfg.get("preferred_ats_hosts") or [
+        "greenhouse.io", "grnh.se", "myworkdayjobs.com", "ashbyhq.com",
+    ]
+    if not isinstance(raw, list):
+        return []
+    # Never prefer hosts we are currently skipping for apply.
+    skip = set(load_skip_apply_hosts())
+    return [h for h in (str(x).strip().lower() for x in raw) if h and h not in skip]
+
+
+def preferred_ats_rank(url: str | None) -> int:
+    """Lower rank = higher Stage 6 priority. Unknown hosts rank after preferred list."""
+    if not url:
+        return 100
+    url_l = str(url).lower()
+    hosts = load_preferred_ats_hosts()
+    for i, host in enumerate(hosts):
+        if host in url_l:
+            return i
+    if url_l.startswith("http"):
+        return 50
+    return 100
+
+
+def load_greenhouse_boards() -> list[dict]:
+    """Load curated Greenhouse board targets from greenhouse_boards.yaml."""
+    import yaml
+    path = CONFIG_DIR / "greenhouse_boards.yaml"
+    if not path.exists():
+        return []
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    boards = data.get("boards") or []
+    if not isinstance(boards, list):
+        return []
+    return [b for b in boards if isinstance(b, dict) and b.get("url")]
 
 
 def is_manual_ats(url: str | None) -> bool:
@@ -202,22 +303,24 @@ def get_tier() -> int:
 
     Tier 1 (Discovery):            Python + pip
     Tier 2 (AI Scoring & Tailoring): + LLM API key
-    Tier 3 (Full Auto-Apply):       + Claude Code CLI + Chrome
+    Tier 3 (Full Auto-Apply):       + Chrome + Node.js + Curor API key
     """
     load_env()
 
-    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    has_llm = any(os.environ.get(k) for k in (
+        "CURSOR_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL",
+    ))
     if not has_llm:
         return 1
 
-    has_claude = shutil.which("claude") is not None
+    has_apply_agent = bool(os.environ.get("CURSOR_API_KEY"))
     try:
         get_chrome_path()
         has_chrome = True
     except FileNotFoundError:
         has_chrome = False
 
-    if has_claude and has_chrome:
+    if has_apply_agent and has_chrome:
         return 3
 
     return 2
@@ -238,15 +341,22 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
-        missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
+    if required >= 2 and not any(os.environ.get(k) for k in (
+        "CURSOR_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL",
+    )):
+        missing.append("LLM API key — run [bold]applypilot init[/bold] or set CURSOR_API_KEY")
     if required >= 3:
-        if not shutil.which("claude"):
-            missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")
+        has_cursor = bool(os.environ.get("CURSOR_API_KEY"))
+        if not has_cursor:
+            missing.append(
+                "Apply agent — set [bold]CURSOR_API_KEY[/bold] in ~/.applypilot/.env"
+            )
         try:
             get_chrome_path()
         except FileNotFoundError:
             missing.append("Chrome/Chromium — install or set CHROME_PATH")
+        if not shutil.which("npx"):
+            missing.append("Node.js (npx) — needed for Playwright MCP during auto-apply")
 
     _console.print(
         f"\n[red]'{feature}' requires {TIER_LABELS.get(required, f'Tier {required}')} (Tier {required}).[/red]\n"

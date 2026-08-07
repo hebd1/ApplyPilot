@@ -146,8 +146,8 @@ def _run_cover(min_score: int = 7, validation_mode: str = "normal") -> dict:
 def _run_pdf() -> dict:
     """Stage: PDF conversion — convert tailored resumes and cover letters to PDF."""
     try:
-        from applypilot.scoring.pdf import batch_convert
-        batch_convert()
+        from applypilot.scoring.pdf import batch_convert_materials
+        batch_convert_materials()
         return {"status": "ok"}
     except Exception as e:
         log.error("PDF conversion failed: %s", e)

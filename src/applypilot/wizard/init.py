@@ -245,16 +245,29 @@ def _setup_ai_features() -> None:
         console.print("[dim]Discovery-only mode. You can configure AI later with [bold]applypilot init[/bold].[/dim]")
         return
 
-    console.print("Supported providers: [bold]Gemini[/bold] (recommended, free tier), OpenAI, local (Ollama/llama.cpp)")
+    console.print(
+        "Supported providers: [bold]Cursor[/bold] (Auto mode), "
+        "[bold]OpenRouter[/bold] (free tier models), "
+        "Gemini (free tier), OpenAI, local (Ollama/llama.cpp)"
+    )
     provider = Prompt.ask(
         "Provider",
-        choices=["gemini", "openai", "local"],
-        default="gemini",
+        choices=["cursor", "openrouter", "gemini", "openai", "local"],
+        default="cursor",
     )
 
     env_lines = ["# ApplyPilot configuration", ""]
 
-    if provider == "gemini":
+    if provider == "cursor":
+        api_key = Prompt.ask("Cursor API key (from cursor.com/dashboard/integrations)")
+        env_lines.append(f"CURSOR_API_KEY={api_key}")
+        env_lines.append("LLM_MODEL=auto")
+    elif provider == "openrouter":
+        api_key = Prompt.ask("OpenRouter API key (from openrouter.ai/keys — free tier available)")
+        model = Prompt.ask("Model", default="openrouter/free")
+        env_lines.append(f"OPENROUTER_API_KEY={api_key}")
+        env_lines.append(f"LLM_MODEL={model}")
+    elif provider == "gemini":
         api_key = Prompt.ask("Gemini API key (from aistudio.google.com)")
         model = Prompt.ask("Model", default="gemini-2.0-flash")
         env_lines.append(f"GEMINI_API_KEY={api_key}")
@@ -280,25 +293,26 @@ def _setup_ai_features() -> None:
 # ---------------------------------------------------------------------------
 
 def _setup_auto_apply() -> None:
-    """Configure autonomous job application (requires Claude Code CLI)."""
+    """Configure autonomous job application (requires Cursor SDK)."""
     console.print(Panel(
         "[bold]Step 5: Auto-Apply (optional)[/bold]\n"
         "ApplyPilot can autonomously fill and submit job applications\n"
-        "using Claude Code as the browser agent."
+        "using Cursor SDK as the browser agent."
     ))
 
     if not Confirm.ask("Enable autonomous job applications?", default=True):
         console.print("[dim]You can apply manually using the tailored resumes ApplyPilot generates.[/dim]")
         return
 
-    # Check for Claude Code CLI
-    if shutil.which("claude"):
-        console.print("[green]Claude Code CLI detected.[/green]")
+    # Check for CURSOR_API_KEY
+    import os
+    if os.environ.get("CURSOR_API_KEY"):
+        console.print("[green]CURSOR_API_KEY detected.[/green]")
     else:
         console.print(
-            "[yellow]Claude Code CLI not found on PATH.[/yellow]\n"
-            "Install it from: [bold]https://claude.ai/code[/bold]\n"
-            "Auto-apply won't work until Claude Code is installed."
+            "[yellow]CURSOR_API_KEY not found.[/yellow]\n"
+            "Set CURSOR_API_KEY in ~/.applypilot/.env or run the init wizard.\n"
+            "Auto-apply won't work without it."
         )
 
     # Optional: CapSolver for CAPTCHAs
@@ -356,7 +370,7 @@ def run_wizard() -> None:
     _setup_ai_features()
     console.print()
 
-    # Step 5: Auto-apply (Claude Code detection)
+    # Step 5: Auto-apply (Cursor SDK detection)
     _setup_auto_apply()
     console.print()
 
@@ -380,7 +394,7 @@ def run_wizard() -> None:
     if tier == 1:
         unlock_hint = "\n[dim]To unlock Tier 2: configure an LLM API key (re-run [bold]applypilot init[/bold]).[/dim]"
     elif tier == 2:
-        unlock_hint = "\n[dim]To unlock Tier 3: install Claude Code CLI + Chrome.[/dim]"
+        unlock_hint = "\n[dim]To unlock Tier 3: set CURSOR_API_KEY and install Chrome + Node.js.[/dim]"
 
     console.print(
         Panel.fit(

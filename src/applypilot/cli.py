@@ -147,7 +147,7 @@ def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
     min_score: int = typer.Option(7, "--min-score", help="Minimum fit score for job selection."),
-    model: str = typer.Option("haiku", "--model", "-m", help="Claude model name."),
+    model: str = typer.Option("auto", "--model", "-m", help="Apply agent model (auto for Cursor)."),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
@@ -164,7 +164,7 @@ def apply(
     from applypilot.config import check_tier, PROFILE_PATH as _profile_path
     from applypilot.database import get_connection
 
-    # --- Utility modes (no Chrome/Claude needed) ---
+    # --- Utility modes (no Chrome/agent needed) ---
 
     if mark_applied:
         from applypilot.apply.launcher import mark_job
@@ -186,7 +186,7 @@ def apply(
 
     # --- Full apply mode ---
 
-    # Check 1: Tier 3 required (Claude Code CLI + Chrome)
+    # Check 1: Tier 3 required (Cursor API + Chrome)
     check_tier(3, "auto-apply")
 
     # Check 2: Profile exists
@@ -224,20 +224,23 @@ def apply(
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
         console.print(f"\n[bold]Run manually:[/bold]")
         console.print(
-            f"  claude --model {model} -p "
-            f"--mcp-config {mcp_path} "
-            f"--permission-mode bypassPermissions < {prompt_file}"
+            f"  Use a Cursor agent with the prompt file and MCP config above."
         )
         return
 
     from applypilot.apply.launcher import main as apply_main
+    from applypilot.apply.cursor_apply import get_apply_backend
+
+    backend = get_apply_backend()
+    apply_model = model if not (backend == "cursor" and model in ("sonnet", "haiku", "opus")) else "auto"
 
     effective_limit = limit if limit is not None else (0 if continuous else 1)
 
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
+    console.print(f"  Backend:  {backend}")
     console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
     console.print(f"  Workers:  {workers}")
-    console.print(f"  Model:    {model}")
+    console.print(f"  Model:    {apply_model}")
     console.print(f"  Headless: {headless}")
     console.print(f"  Dry run:  {dry_run}")
     if url:
@@ -249,7 +252,7 @@ def apply(
         target_url=url,
         min_score=min_score,
         headless=headless,
-        model=model,
+        model=apply_model,
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
@@ -380,10 +383,18 @@ def doctor() -> None:
 
     # --- Tier 2 checks ---
     import os
+    has_cursor = bool(os.environ.get("CURSOR_API_KEY"))
+    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
     has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
     has_local = bool(os.environ.get("LLM_URL"))
-    if has_gemini:
+    if has_cursor:
+        model = os.environ.get("LLM_MODEL", "auto")
+        results.append(("LLM API key", ok_mark, f"Cursor Auto ({model})"))
+    elif has_openrouter:
+        model = os.environ.get("LLM_MODEL", "openrouter/free")
+        results.append(("LLM API key", ok_mark, f"OpenRouter ({model})"))
+    elif has_gemini:
         model = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
         results.append(("LLM API key", ok_mark, f"Gemini ({model})"))
     elif has_openai:
@@ -393,16 +404,17 @@ def doctor() -> None:
         results.append(("LLM API key", ok_mark, f"Local: {os.environ.get('LLM_URL')}"))
     else:
         results.append(("LLM API key", fail_mark,
-                        "Set GEMINI_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
+                        "Set CURSOR_API_KEY or OPENROUTER_API_KEY in ~/.applypilot/.env (run 'applypilot init')"))
 
     # --- Tier 3 checks ---
-    # Claude Code CLI
-    claude_bin = shutil.which("claude")
-    if claude_bin:
-        results.append(("Claude Code CLI", ok_mark, claude_bin))
+    from applypilot.apply.cursor_apply import get_apply_backend
+    apply_backend = get_apply_backend()
+
+    if apply_backend == "cursor" and has_cursor:
+        results.append(("Apply agent", ok_mark, "Cursor SDK + Playwright + Gmail MCP"))
     else:
-        results.append(("Claude Code CLI", fail_mark,
-                        "Install from https://claude.ai/code (needed for auto-apply)"))
+        results.append(("Apply agent", fail_mark,
+                        "Set CURSOR_API_KEY in ~/.applypilot/.env (auto-apply)"))
 
     # Chrome
     try:
@@ -423,10 +435,41 @@ def doctor() -> None:
     # CapSolver (optional)
     capsolver = os.environ.get("CAPSOLVER_API_KEY")
     if capsolver:
-        results.append(("CapSolver API key", ok_mark, "CAPTCHA solving enabled"))
+        # Live balance check when possible (non-fatal on network errors)
+        try:
+            import json
+            import urllib.request
+            payload = json.dumps({"clientKey": capsolver}).encode()
+            req = urllib.request.Request(
+                "https://api.capsolver.com/getBalance",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            if data.get("errorId") == 0:
+                bal = data.get("balance")
+                results.append(("CapSolver API key", ok_mark, f"balance ${bal}"))
+            else:
+                results.append(("CapSolver API key", fail_mark,
+                                f"{data.get('errorCode') or 'invalid key'}"))
+        except Exception as exc:
+            results.append(("CapSolver API key", ok_mark,
+                            f"set (balance check failed: {exc})"))
     else:
         results.append(("CapSolver API key", "[dim]optional[/dim]",
                         "Set CAPSOLVER_API_KEY in .env for CAPTCHA solving"))
+
+    # Gmail MCP OAuth (optional until a site asks for email OTP)
+    from applypilot.apply.cursor_apply import gmail_mcp_authenticated, gmail_mcp_credentials_path
+    if gmail_mcp_authenticated():
+        results.append(("Gmail MCP auth", ok_mark, str(gmail_mcp_credentials_path())))
+    else:
+        results.append(("Gmail MCP auth", "[dim]optional[/dim]",
+                        "Prefer bash scripts/gmail_oauth_readonly.sh "
+                        "(stock MCP auth requests modify/settings; we want readonly OTP). "
+                        "APPLY_ALLOW_GMAIL_SEND=1 only with explicit consent to send)"))
 
     # --- Render results ---
     console.print()
@@ -446,9 +489,9 @@ def doctor() -> None:
 
     if tier == 1:
         console.print("[dim]  → Tier 2 unlocks: scoring, tailoring, cover letters (needs LLM API key)[/dim]")
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Chrome + Node.js + CURSOR_API_KEY)[/dim]")
     elif tier == 2:
-        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+        console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Chrome + Node.js + CURSOR_API_KEY)[/dim]")
 
     console.print()
 

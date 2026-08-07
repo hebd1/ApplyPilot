@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
+from applypilot.scoring.employment import format_employment_for_prompt
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     LLM_LEAK_PHRASES,
@@ -37,8 +38,11 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     boundary = profile.get("skills_boundary", {})
     resume_facts = profile.get("resume_facts", {})
 
-    # Preferred name for the sign-off (falls back to full name)
-    sign_off_name = personal.get("preferred_name") or personal.get("full_name", "")
+    # Sign-off must use full legal name
+    sign_off_name = personal.get("full_name", "")
+    city = personal.get("city", "")
+    state = personal.get("province_state", "")
+    country = personal.get("country", "United States")
 
     # Flatten all allowed skills
     all_skills: list[str] = []
@@ -50,68 +54,101 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     # Real metrics from resume_facts
     real_metrics = resume_facts.get("real_metrics", [])
     preserved_projects = resume_facts.get("preserved_projects", [])
+    personal_projects = resume_facts.get("personal_projects", []) or []
 
     # Build achievement examples for the prompt
     projects_hint = ""
     if preserved_projects:
-        projects_hint = f"\nKnown projects to reference: {', '.join(preserved_projects)}"
+        projects_hint += (
+            f"\nWork-product projects to reference in experience: "
+            f"{', '.join(preserved_projects)}"
+        )
+    personal_names = []
+    for entry in personal_projects:
+        if isinstance(entry, dict) and entry.get("name"):
+            personal_names.append(str(entry["name"]))
+        elif str(entry).strip():
+            personal_names.append(str(entry).strip())
+    if personal_names:
+        projects_hint += f"\nPersonal projects (optional mention): {', '.join(personal_names)}"
 
     metrics_hint = ""
     if real_metrics:
         metrics_hint = f"\nReal metrics to use: {', '.join(real_metrics)}"
+
+    employment_block = format_employment_for_prompt(profile)
+    employment_hint = (
+        f"\nEmployment history (separate employers — never merge Kount Inc and Equifax):\n"
+        f"{employment_block}"
+    )
 
     # Build the full banned list from the validator so the prompt stays in sync
     # with what will actually be rejected — the validator checks all of these.
     all_banned = ", ".join(f'"{w}"' for w in BANNED_WORDS)
     leak_banned = ", ".join(f'"{p}"' for p in LLM_LEAK_PHRASES)
 
-    return f"""Write a cover letter for {sign_off_name}. The goal is to get an interview.
+    work_auth = profile.get("work_authorization", {})
+    auth_note = ""
+    if work_auth.get("legally_authorized_to_work"):
+        auth_note = (
+            f"\nIf relevant to the role, include one sentence on work authorization "
+            f"(e.g. citizen/resident of {country}, able to obtain clearance if required). "
+            f"Only include if the job mentions clearance, citizenship, or sponsorship."
+        )
 
-STRUCTURE: 3 short paragraphs. Under 250 words. Every sentence must earn its place.
+    return f"""Write a professional cover letter for {sign_off_name}. Target: interview.
 
-PARAGRAPH 1 (2-3 sentences): Open with a specific thing YOU built that solves THEIR problem. Not "I'm excited about this role." Not "This role aligns with my experience." Start with the work.
+FORMAT (follow exactly — header contact block is added automatically at PDF render):
 
-PARAGRAPH 2 (3-4 sentences): Pick 2 achievements from the resume that are MOST relevant to THIS job. Use numbers. Frame as solving their problem, not listing your accomplishments.{projects_hint}{metrics_hint}
+Subject: [Job Title] – [Company or Team Name]
 
-PARAGRAPH 3 (1-2 sentences): One specific thing about the company from the job description (a product, a technical challenge, a team structure). Then close. "Happy to walk through any of this in more detail." or "Let's discuss." Nothing else.
+Dear [Company] Hiring Team,
 
-BANNED WORDS AND PHRASES (automated validator rejects ANY of these — do not use even once):
+[Opening paragraph: 3-4 sentences. State the exact role title. Show you understand the company's product/mission. Connect your background to what they need. Mention AI-assisted engineering workflow if the job values modern tooling.]
+
+[Body paragraph 1: 4-5 sentences. Deep match on core technical requirements. Cite 2 specific achievements from the resume with metrics. Use company/project names from resume_facts.]
+
+[Body paragraph 2: 4-5 sentences. Second angle — distributed systems, platform work, IAM, infra, or whatever the job emphasizes. Another achievement with numbers.]
+
+[Optional body paragraph 3: 2-3 sentences on culture fit, ownership, on-call, or team collaboration if relevant.]
+
+Thank you for your time and consideration. I look forward to discussing how my [relevant expertise] can add value to the [Company] team.
+
+Warm regards,
+{sign_off_name}
+
+LENGTH: 350-500 words. Four to five substantive paragraphs between salutation and thank-you line.
+
+VOICE:
+- Professional but confident. Full sentences, not telegraphic fragments.
+- Specific company and role references from the job description.
+- Every paragraph should cite real work, tools, or metrics from the resume.
+- NEVER use just a first name in the sign-off — always "{sign_off_name}".
+
+BANNED WORDS AND PHRASES (validator rejects these):
 {all_banned}
 
-ALSO BANNED (meta-commentary the validator catches):
+ALSO BANNED (meta-commentary):
 {leak_banned}
 
 BANNED PUNCTUATION: No em dashes (—) or en dashes (–). Use commas or periods.
 
-VOICE:
-- Write like a real engineer emailing someone they respect. Not formal, not casual. Just direct.
-- NEVER narrate or explain what you're doing. BAD: "This demonstrates my commitment to X." GOOD: Just state the fact and move on.
-- NEVER hedge. BAD: "might address some of your challenges." GOOD: "solves the same problem your team is facing."
-- Every sentence should contain either a number, a tool name, or a specific outcome. If it doesn't, cut it.
-- Read it out loud. If it sounds like a robot wrote it, rewrite it.
-
 FABRICATION = INSTANT REJECTION:
 The candidate's real tools are ONLY: {skills_str}.
-Do NOT mention ANY tool not in this list. If the job asks for tools not listed, talk about the work you did, not the tools.
+Do NOT mention ANY tool not in this list.{projects_hint}{metrics_hint}{employment_hint}{auth_note}
 
-Sign off: just "{sign_off_name}"
-
-Output ONLY the letter text. No subject lines. No "Here is the cover letter:" preamble. No notes after the sign-off.
-Start DIRECTLY with "Dear Hiring Manager," and end with the name."""
+Output ONLY the letter from "Subject:" through the sign-off name. No contact header (name/address/email at top). No preamble. No notes after the sign-off."""
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _strip_preamble(text: str) -> str:
-    """Remove LLM preamble before 'Dear Hiring Manager,' if present.
-
-    Gemini and other models sometimes output "Here is the cover letter:" or
-    similar meta-commentary before the actual letter text. Strip everything
-    before the first occurrence of "Dear" so the validator's start-check passes.
-    """
-    dear_idx = text.lower().find("dear")
-    if dear_idx > 0:
-        return text[dear_idx:]
+    """Remove LLM preamble before 'Subject:' or 'Dear' if present."""
+    lower = text.lower()
+    for marker in ("subject:", "dear "):
+        idx = lower.find(marker)
+        if idx > 0:
+            return text[idx:]
     return text
 
 
@@ -136,9 +173,11 @@ def generate_cover_letter(
     Returns:
         The cover letter text (best attempt even if validation failed).
     """
+    from applypilot.job_meta import display_company
+
     job_text = (
         f"TITLE: {job['title']}\n"
-        f"COMPANY: {job['site']}\n"
+        f"COMPANY: {display_company(job)}\n"
         f"LOCATION: {job.get('location', 'N/A')}\n\n"
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
@@ -165,7 +204,7 @@ def generate_cover_letter(
             )},
         ]
 
-        letter = client.chat(messages, max_tokens=1024, temperature=0.7)
+        letter = client.chat(messages, max_tokens=2048, temperature=0.7)
         letter = sanitize_text(letter)  # auto-fix em dashes, smart quotes
         letter = _strip_preamble(letter)  # remove any "Here is the letter:" prefix
 
@@ -208,8 +247,14 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         "AND full_description IS NOT NULL "
         "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
         "AND COALESCE(cover_attempts, 0) < ? "
+        "AND application_url IS NOT NULL AND application_url LIKE 'http%' "
+        "AND LOWER(application_url) NOT LIKE '%linkedin.com%' "
+        "AND LOWER(application_url) NOT LIKE '%indeed.com%' "
+        "AND LOWER(application_url) NOT LIKE '%ziprecruiter%' "
+        "AND LOWER(application_url) NOT LIKE '%glassdoor.com%' "
+        "AND LOWER(application_url) NOT LIKE '%talent.com%' "
         "ORDER BY fit_score DESC LIMIT ?",
-        (min_score, MAX_ATTEMPTS, limit),
+        (min_score, MAX_ATTEMPTS, limit * 3),
     ).fetchall()
 
     if not jobs:
@@ -220,6 +265,30 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     if jobs and not isinstance(jobs[0], dict):
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
+
+    from applypilot.job_meta import job_has_usable_apply_url
+
+    apply_ready: list[dict] = []
+    for job in jobs:
+        ok, reason = job_has_usable_apply_url(job)
+        if ok:
+            apply_ready.append(job)
+        else:
+            log.info(
+                "Skip cover (no usable apply URL: %s) | %s",
+                reason,
+                (job.get("title") or "")[:60],
+            )
+        if len(apply_ready) >= limit:
+            break
+    jobs = apply_ready
+
+    if not jobs:
+        log.info(
+            "No cover-letter candidates with score >= %d and a usable application_url.",
+            min_score,
+        )
+        return {"generated": 0, "errors": 0, "elapsed": 0.0}
 
     COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
     log.info(
@@ -249,13 +318,15 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             pdf_path = None
             try:
                 from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path))
+                pdf_path = str(convert_to_pdf(
+                    cl_path, job=job, profile=profile, kind="cover",
+                ))
             except Exception:
-                log.debug("PDF generation failed for %s", cl_path, exc_info=True)
+                log.warning("PDF generation failed for %s", cl_path, exc_info=True)
 
             result = {
                 "url": job["url"],
-                "path": str(cl_path),
+                "path": pdf_path or str(cl_path),
                 "pdf_path": pdf_path,
                 "title": job["title"],
                 "site": job["site"],

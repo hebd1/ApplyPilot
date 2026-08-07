@@ -9,6 +9,33 @@
 manual_ats:
   - "ibegin.tcsapps.com"       # TCS iBegin — unsolvable CAPTCHA every time
 
+# Skip Stage 6 apply for these ATS hosts (still discoverable; mark failed/skipped).
+# Lever hCaptcha is currently unsupported by CapSolver — focus on Greenhouse/Workday.
+skip_apply_hosts:
+  - "lever.co"
+
+# ── Marketplace / contractor hosts (not real employer ATS forms) ─────────
+# Skip at discovery insert and Stage 6 acquire. These clog Indeed feeds
+# (AuraOne, Turing, Mercor, …) and fail as not_a_job_application.
+marketplace_hosts:
+  - "auraone.ai"
+  - "betterteam.com"
+  - "turing.com"
+  - "mercor.com"
+  - "toptal.com"
+  - "upwork.com"
+  - "fiverr.com"
+  - "freelancer.com"
+
+# Preferred ATS hosts for Stage 6 queue ordering (lower rank = try first).
+# Matched as substring against application_url / url hostname.
+# Lever omitted while CapSolver cannot solve Lever hCaptcha (see skip_apply_hosts).
+preferred_ats_hosts:
+  - "greenhouse.io"
+  - "grnh.se"
+  - "myworkdayjobs.com"
+  - "ashbyhq.com"
+
 # ── Blocked sites — too problematic for automation ───────────────────────
 blocked:
   sites:
@@ -23,6 +50,9 @@ blocked:
     - "%google.jobs%"
     - "%accenture%"
     - "%workopolis.com/out%"
+# %/redirect?id=% removed — too broad; classify_apply_url + talent pattern below
+    - "%talent.com/redirect%"
+
 
 # ── Blocked SSO domains — cannot authenticate through these ──────────────
 blocked_sso:

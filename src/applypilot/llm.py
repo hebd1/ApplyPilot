@@ -2,16 +2,22 @@
 Unified LLM client for ApplyPilot.
 
 Auto-detects provider from environment:
-  GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
-  OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
-  LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
+  CURSOR_API_KEY     -> Cursor Auto mode (default: auto)
+  OPENROUTER_API_KEY -> OpenRouter free-tier models (default: openrouter/free)
+  GEMINI_API_KEY     -> Google Gemini (default: gemini-2.0-flash)
+  OPENAI_API_KEY     -> OpenAI (default: gpt-4o-mini)
+  LLM_URL            -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
 """
 
+from __future__ import annotations
+
 import logging
 import os
+import threading
 import time
+from datetime import datetime
 
 import httpx
 
@@ -21,16 +27,50 @@ log = logging.getLogger(__name__)
 # Provider detection
 # ---------------------------------------------------------------------------
 
+_CURSOR_PROVIDER = "cursor"
+
+_OUTPUT_WRAPPER = (
+    "You are a text-generation assistant. Output ONLY the requested content. "
+    "No commentary, preamble, tool use, or markdown fences unless explicitly asked.\n\n"
+)
+
+
 def _detect_provider() -> tuple[str, str, str]:
     """Return (base_url, model, api_key) based on environment variables.
 
     Reads env at call time (not module import time) so that load_env() called
     in _bootstrap() is always visible here.
     """
+    cursor_key = os.environ.get("CURSOR_API_KEY", "")
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
+
+    # If the model looks like an OpenRouter model (contains "/" like "openrouter/free"
+    # or "qwen/qwen3.7-flash"), prefer OpenRouter even if CURSOR_API_KEY is set.
+    # The CURSOR_API_KEY is still used by the apply agent (Stage 6) independently.
+    if openrouter_key and model_override and "/" in model_override:
+        or_model = model_override if model_override != "auto" else ""
+        return (
+            "https://openrouter.ai/api/v1",
+            or_model or "openrouter/free",
+            openrouter_key,
+        )
+
+    if cursor_key:
+        return (_CURSOR_PROVIDER, model_override or "auto", cursor_key)
+
+    if openrouter_key:
+        or_model = model_override
+        if not or_model or or_model == "auto":
+            or_model = ""
+        return (
+            "https://openrouter.ai/api/v1",
+            or_model or "openrouter/free",
+            openrouter_key,
+        )
 
     if gemini_key and not local_url:
         return (
@@ -55,8 +95,49 @@ def _detect_provider() -> tuple[str, str, str]:
 
     raise RuntimeError(
         "No LLM provider configured. "
-        "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
+        "Set CURSOR_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
     )
+
+
+def _flatten_messages(messages: list[dict]) -> str:
+    """Convert OpenAI-style messages into a single prompt for Cursor agents."""
+    parts: list[str] = []
+    for msg in messages:
+        role = msg["role"]
+        text = msg.get("content", "")
+        if role == "system":
+            parts.append(f"Instructions:\n{text}")
+        elif role == "user":
+            parts.append(f"User:\n{text}")
+        elif role == "assistant":
+            parts.append(f"Assistant:\n{text}")
+    return "\n\n".join(parts)
+
+
+def _cursor_retry_wait(exc: Exception, attempt: int) -> float:
+    """Compute wait seconds for a retryable Cursor error."""
+    retry_after = getattr(exc, "retry_after", None)
+    if retry_after is not None:
+        if isinstance(retry_after, (int, float)):
+            return float(retry_after)
+        if isinstance(retry_after, datetime):
+            return max(0.0, (retry_after - datetime.now(retry_after.tzinfo)).total_seconds())
+        try:
+            return float(retry_after)
+        except (TypeError, ValueError):
+            pass
+    return min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
+
+
+_cursor_semaphore: threading.Semaphore | None = None
+
+
+def _get_cursor_semaphore() -> threading.Semaphore:
+    global _cursor_semaphore
+    if _cursor_semaphore is None:
+        limit = int(os.environ.get("CURSOR_MAX_CONCURRENCY", "2"))
+        _cursor_semaphore = threading.Semaphore(max(1, limit))
+    return _cursor_semaphore
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +157,7 @@ _GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
 class LLMClient:
-    """Thin LLM client supporting OpenAI-compatible and native Gemini endpoints.
+    """Thin LLM client supporting Cursor Auto, OpenAI-compatible, and native Gemini endpoints.
 
     For Gemini keys, starts on the OpenAI-compat layer. On a 403 (which
     happens with preview/experimental models not exposed via compat), it
@@ -92,6 +173,45 @@ class LLMClient:
         # True once we've confirmed the native Gemini API works for this model
         self._use_native_gemini: bool = False
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
+        self._is_cursor: bool = base_url == _CURSOR_PROVIDER
+
+    # -- Cursor Auto API ----------------------------------------------------
+
+    def _chat_cursor(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Call Cursor Auto mode via cursor-sdk."""
+        from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions
+
+        prompt = _OUTPUT_WRAPPER + _flatten_messages(messages)
+        if temperature != 0.0 or max_tokens != 4096:
+            prompt += (
+                f"\n\nGeneration settings: temperature={temperature}, "
+                f"max_output_tokens={max_tokens}."
+            )
+
+        with _get_cursor_semaphore():
+            try:
+                result = Agent.prompt(
+                    prompt,
+                    AgentOptions(
+                        api_key=self.api_key,
+                        model=self.model,
+                        local=LocalAgentOptions(cwd=os.getcwd()),
+                    ),
+                )
+            except CursorAgentError:
+                raise
+
+        if result.status == "finished":
+            return result.result or ""
+
+        raise RuntimeError(
+            f"Cursor agent run failed (status={result.status}, id={getattr(result, 'id', '?')})"
+        )
 
     # -- Native Gemini API --------------------------------------------------
 
@@ -201,13 +321,16 @@ class LLMClient:
 
         for attempt in range(_MAX_RETRIES):
             try:
+                if self._is_cursor:
+                    return self._chat_cursor(messages, temperature, max_tokens)
+
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
                     return self._chat_native_gemini(messages, temperature, max_tokens)
 
                 return self._chat_compat(messages, temperature, max_tokens)
 
-            except _GeminiCompatForbidden as exc:
+            except _GeminiCompatForbidden:
                 # Model not available on OpenAI-compat layer — switch to native.
                 log.warning(
                     "Gemini compat endpoint returned 403 for model '%s'. "
@@ -263,6 +386,23 @@ class LLMClient:
                     continue
                 raise
 
+            except Exception as exc:
+                from cursor_sdk import CursorAgentError
+
+                if isinstance(exc, CursorAgentError):
+                    if getattr(exc, "is_retryable", False) and attempt < _MAX_RETRIES - 1:
+                        wait = _cursor_retry_wait(exc, attempt)
+                        log.warning(
+                            "Cursor LLM rate limited. Waiting %ds before retry %d/%d.",
+                            wait,
+                            attempt + 1,
+                            _MAX_RETRIES,
+                        )
+                        time.sleep(wait)
+                        continue
+                    raise
+                raise
+
         raise RuntimeError("LLM request failed after all retries")
 
     def ask(self, prompt: str, **kwargs) -> str:
@@ -292,6 +432,7 @@ def get_client() -> LLMClient:
     global _instance
     if _instance is None:
         base_url, model, api_key = _detect_provider()
-        log.info("LLM provider: %s  model: %s", base_url, model)
+        provider_label = "Cursor Auto" if base_url == _CURSOR_PROVIDER else base_url
+        log.info("LLM provider: %s  model: %s", provider_label, model)
         _instance = LLMClient(base_url, model, api_key)
     return _instance

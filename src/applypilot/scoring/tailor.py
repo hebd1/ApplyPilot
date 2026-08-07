@@ -16,9 +16,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
+from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile, title_is_excluded
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
+from applypilot.scoring.employment import format_employment_for_prompt, normalize_experience_headers
+from applypilot.scoring.resume_format import assemble_resume_text
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     FABRICATION_WATCHLIST,
@@ -33,6 +35,28 @@ MAX_ATTEMPTS = 5  # max cross-run retries before giving up
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
+
+# ── Prompt Construction ──────────────────────────────────────────────────
+
+def _bullet_quota_block(profile: dict) -> str:
+    """Per-employer bullet counts from employment_history (most recent first)."""
+    from applypilot.scoring.employment import get_employment_history
+
+    history = get_employment_history(profile)
+    if not history:
+        return (
+            "- Most recent role: 4 bullets\n"
+            "- Previous role: 3 bullets\n"
+            "- Older roles: 1-2 bullets"
+        )
+    quotas = [4, 3, 2]
+    lines: list[str] = []
+    for i, row in enumerate(history):
+        company = row.get("company") or f"Role {i + 1}"
+        n = quotas[i] if i < len(quotas) else 1
+        lines.append(f"- {company}: {n} full-sentence bullet(s)")
+    return "\n".join(lines)
+
 
 def _build_tailor_prompt(profile: dict) -> str:
     """Build the resume tailoring system prompt from the user's profile.
@@ -53,13 +77,30 @@ def _build_tailor_prompt(profile: dict) -> str:
 
     # Preserved entities
     companies = resume_facts.get("preserved_companies", [])
-    projects = resume_facts.get("preserved_projects", [])
+    work_projects = resume_facts.get("preserved_projects", [])
+    personal_projects = resume_facts.get("personal_projects", [])
     school = resume_facts.get("preserved_school", "")
     real_metrics = resume_facts.get("real_metrics", [])
 
     companies_str = ", ".join(companies) if companies else "N/A"
-    projects_str = ", ".join(projects) if projects else "N/A"
+    work_projects_str = ", ".join(work_projects) if work_projects else "N/A"
     metrics_str = ", ".join(real_metrics) if real_metrics else "N/A"
+    employment_block = format_employment_for_prompt(profile)
+
+    personal_project_lines: list[str] = []
+    for entry in personal_projects:
+        if isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            desc = str(entry.get("description", "")).strip()
+            if name and desc:
+                personal_project_lines.append(f"- {name}: {desc}")
+            elif name:
+                personal_project_lines.append(f"- {name}")
+        elif str(entry).strip():
+            personal_project_lines.append(f"- {str(entry).strip()}")
+    personal_projects_block = (
+        "\n".join(personal_project_lines) if personal_project_lines else "- (none listed)"
+    )
 
     # Include ALL banned words from the validator so the LLM knows exactly
     # what will be rejected — the validator checks for these automatically.
@@ -93,9 +134,16 @@ SKILLS: Reorder each category so the job's must-haves appear first.
 
 Reframe EVERY bullet for this role. Same real work, different angle. Every bullet must be reworded. Never copy verbatim.
 
-PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
+WORK-PRODUCT PROJECTS (fold into employer bullets — do not invent a separate work projects section): {work_projects_str}
 
-BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Operated, Optimized). Most relevant first. Max 4 per section.
+PERSONAL PROJECTS (canonical — use a PROJECTS section; reorder by relevance, drop irrelevant ones):
+{personal_projects_block}
+
+BULLETS: Strong verb + what you built + quantified impact. Every bullet is one full sentence, 28-45 words — match the depth of the base resume (not short phrases).
+
+BULLET COUNTS (from employment_history order — most recent first):
+{_bullet_quota_block(profile)}
+- Do not mix short phrase bullets with long paragraph bullets
 
 ## VOICE:
 - Write like a real engineer. Short, direct.
@@ -108,13 +156,30 @@ BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, De
 ## HARD RULES:
 - Do NOT invent work, companies, degrees, or certifications
 - Do NOT change real numbers ({metrics_str})
-- Preserved companies: {companies_str} -- names stay as-is
+- Preserved companies: {companies_str} -- each must be its own experience[] entry
 - Preserved school: {school}
-- Must fit 1 page.
+- Must fit exactly 1 page when rendered as PDF. Fill the page using employment_history bullet quotas above.
+- Fold work-product initiatives into employer bullets. Keep a separate PROJECTS section for personal apps only (reorder/drop by relevance).
+- Include education highlights and additional_information when they fit without overflowing the page.
+- Avoid banned filler words when possible (strict validation retries on them; normal mode warns). Preferred voice: concrete verbs and outcomes.
+
+## EMPLOYMENT HISTORY (canonical — one experience[] entry per row, never merge employers):
+{employment_block}
+
+EMPLOYER RULES:
+- Each experience[] entry uses: company, location, title, dates, bullets[]
+- The company field is REQUIRED and must match EMPLOYMENT HISTORY exactly (Equifax, Kount Inc, Center for High Performance Computing (CHPC))
+- Never use the bare acronym "CHPC" as the company field — always write "Center for High Performance Computing (CHPC)"
+- Rendered layout is always two header lines per job:
+  Line 1: COMPANY (uppercase) + location (e.g. "CENTER FOR HIGH PERFORMANCE COMPUTING (CHPC)" + "Salt Lake City, UT")
+  Line 2: job title + dates (e.g. "Software Development Engineer" + "June 2025-Present")
+- NEVER combine employers: no "Kount Inc (Equifax)", "Kount, an Equifax Company", or "Kount / Equifax"
+- Kount Inc and Equifax are separate employers — separate experience[] entries
+- Do not drop any employer from the list above
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":"{school} | {education_level}"}}"""
+{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages & Frameworks":"...","Cloud & Infrastructure":"..."}},"experience":[{{"company":"Equifax","location":"Boise, ID","title":"Software Development Engineer","dates":"June 2025-Present","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"name":"AnyWidget","description":"Android home screen widget app. Built with Kotlin, Firebase, MySQL, and Google Stitch. Over 1k downloads on the Google Play Store."}}],"education":{{"school":"{school}","location":"Salt Lake City, UT","degree":"Bachelor of Science in Computer Science, Minor in Russian","year":"2021","highlights":["highlight 1","highlight 2"]}},"additional_information":"Proficient Russian speaker, Google Play Store application developer, digital artist"}}"""
 
 
 def _build_judge_prompt(profile: dict) -> str:
@@ -153,6 +218,7 @@ ISSUES: (list any problems, or "none")
 3. Inventing work that has no basis in any original bullet (completely new achievements).
 4. Adding companies, roles, or degrees that don't exist.
 5. Changing real numbers (inflating 80% to 95%, 500 nodes to 1000 nodes).
+6. Merging two employers into one experience header (e.g. "Kount Inc (Equifax)").
 
 ## WHAT IS NOT FABRICATION (do NOT fail for these):
 - Rewording any bullet, even heavily, as long as the underlying work is real
@@ -219,83 +285,7 @@ def extract_json(raw: str) -> dict:
 
 
 # ── Resume Assembly (profile-driven header) ──────────────────────────────
-
-def assemble_resume_text(data: dict, profile: dict) -> str:
-    """Convert JSON resume data to formatted plain text.
-
-    Header (name, location, contact) is ALWAYS code-injected from the profile,
-    never LLM-generated. All text fields are sanitized.
-
-    Args:
-        data: Parsed JSON resume from the LLM.
-        profile: User profile dict from load_profile().
-
-    Returns:
-        Formatted resume text.
-    """
-    personal = profile.get("personal", {})
-    lines: list[str] = []
-
-    # Header -- always code-injected from profile
-    lines.append(personal.get("full_name", ""))
-    lines.append(sanitize_text(data.get("title", "Software Engineer")))
-
-    # Location from search config or profile -- leave blank if not available
-    # The location line is optional; the original used a hardcoded city.
-    # We omit it here; the LLM prompt can include it if the user sets it.
-
-    # Contact line
-    contact_parts: list[str] = []
-    if personal.get("email"):
-        contact_parts.append(personal["email"])
-    if personal.get("phone"):
-        contact_parts.append(personal["phone"])
-    if personal.get("github_url"):
-        contact_parts.append(personal["github_url"])
-    if personal.get("linkedin_url"):
-        contact_parts.append(personal["linkedin_url"])
-    if contact_parts:
-        lines.append(" | ".join(contact_parts))
-    lines.append("")
-
-    # Summary
-    lines.append("SUMMARY")
-    lines.append(sanitize_text(data["summary"]))
-    lines.append("")
-
-    # Technical Skills
-    lines.append("TECHNICAL SKILLS")
-    if isinstance(data["skills"], dict):
-        for cat, val in data["skills"].items():
-            lines.append(f"{cat}: {sanitize_text(str(val))}")
-    lines.append("")
-
-    # Experience
-    lines.append("EXPERIENCE")
-    for entry in data.get("experience", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
-
-    # Projects
-    lines.append("PROJECTS")
-    for entry in data.get("projects", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
-
-    # Education
-    lines.append("EDUCATION")
-    lines.append(sanitize_text(str(data.get("education", ""))))
-
-    return "\n".join(lines)
-
+# assemble_resume_text lives in resume_format.py (canonical ELI_HEBDON layout).
 
 # ── LLM Judge ────────────────────────────────────────────────────────────
 
@@ -369,9 +359,11 @@ def tailor_resume(
     Returns:
         (tailored_text, report) where report contains validation details.
     """
+    from applypilot.job_meta import display_company
+
     job_text = (
         f"TITLE: {job['title']}\n"
-        f"COMPANY: {job['site']}\n"
+        f"COMPANY: {display_company(job)}\n"
         f"LOCATION: {job.get('location', 'N/A')}\n\n"
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
@@ -400,7 +392,7 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_tokens=2048, temperature=0.4)
+        raw = client.chat(messages, max_tokens=4096, temperature=0.4)
 
         # Parse JSON from response
         try:
@@ -408,6 +400,8 @@ def tailor_resume(
         except ValueError:
             avoid_notes.append("Output was not valid JSON. Return ONLY a JSON object, nothing else.")
             continue
+
+        data = normalize_experience_headers(data, profile)
 
         # Layer 1: Validate JSON fields
         validation = validate_json_fields(data, profile, mode=validation_mode)
@@ -425,6 +419,23 @@ def tailor_resume(
 
         # Assemble text (header injected by code, em dashes auto-fixed)
         tailored = assemble_resume_text(data, profile)
+
+        # Layer 1b: Full assembled text validation (employer lines, sections, projects)
+        text_validation = validate_tailored_resume(tailored, profile, original_text=resume_text)
+        report["text_validator"] = text_validation
+        if text_validation.get("warnings"):
+            validation.setdefault("warnings", []).extend(text_validation["warnings"])
+        if not text_validation.get("passed", True):
+            avoid_notes.extend(text_validation.get("errors") or ["Assembled resume failed text validation"])
+            if attempt < max_retries:
+                continue
+            report["status"] = "failed_validation"
+            report["validator"] = {
+                "passed": False,
+                "errors": (validation.get("errors") or []) + (text_validation.get("errors") or []),
+                "warnings": validation.get("warnings") or [],
+            }
+            return tailored, report
 
         # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":
@@ -471,10 +482,30 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
 
-    jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit)
+    jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit * 3)
+
+    from applypilot.job_meta import job_has_usable_apply_url
+
+    apply_ready: list[dict] = []
+    for job in jobs:
+        ok, reason = job_has_usable_apply_url(job)
+        if ok:
+            apply_ready.append(job)
+        else:
+            log.info(
+                "Skip tailor (no usable apply URL: %s) | %s",
+                reason,
+                (job.get("title") or "")[:60],
+            )
+        if len(apply_ready) >= limit:
+            break
+    jobs = apply_ready
 
     if not jobs:
-        log.info("No untailored jobs with score >= %d.", min_score)
+        log.info(
+            "No untailored jobs with score >= %d and a usable application_url.",
+            min_score,
+        )
         return {"approved": 0, "failed": 0, "errors": 0, "elapsed": 0.0}
 
     TAILORED_DIR.mkdir(parents=True, exist_ok=True)
@@ -486,11 +517,27 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
 
     for job in jobs:
         completed += 1
+        if title_is_excluded(job.get("title")):
+            log.info(
+                "%d/%d [SKIP] excluded title | %s",
+                completed, len(jobs), (job.get("title") or "")[:60],
+            )
+            conn.execute(
+                "UPDATE jobs SET fit_score = 1, score_reasoning = ? WHERE url = ?",
+                (
+                    "Excluded by searches.yaml exclude_titles (title matched a negative keyword).",
+                    job["url"],
+                ),
+            )
+            conn.commit()
+            continue
         try:
             tailored, report = tailor_resume(resume_text, job, profile,
                                              validation_mode=validation_mode)
 
-            # Build safe filename prefix
+            from applypilot.job_meta import display_company
+
+            # Build safe filename prefix (board site kept for stable text paths)
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
             prefix = f"{safe_site}_{safe_title}"
@@ -503,7 +550,8 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             job_path = TAILORED_DIR / f"{prefix}_JOB.txt"
             job_desc = (
                 f"Title: {job['title']}\n"
-                f"Company: {job['site']}\n"
+                f"Company: {display_company(job)}\n"
+                f"Board: {job['site']}\n"
                 f"Location: {job.get('location', 'N/A')}\n"
                 f"Score: {job.get('fit_score', 'N/A')}\n"
                 f"URL: {job['url']}\n\n"
@@ -521,13 +569,15 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             if report["status"] in ("approved", "approved_with_judge_warning"):
                 try:
                     from applypilot.scoring.pdf import convert_to_pdf
-                    pdf_path = str(convert_to_pdf(txt_path))
+                    pdf_path = str(convert_to_pdf(
+                        txt_path, job=job, profile=profile, kind="resume",
+                    ))
                 except Exception:
-                    log.debug("PDF generation failed for %s", txt_path, exc_info=True)
+                    log.warning("PDF generation failed for %s", txt_path, exc_info=True)
 
             result = {
                 "url": job["url"],
-                "path": str(txt_path),
+                "path": pdf_path or str(txt_path),
                 "pdf_path": pdf_path,
                 "title": job["title"],
                 "site": job["site"],

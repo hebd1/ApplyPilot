@@ -10,7 +10,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from applypilot.config import DB_PATH
+from applypilot.config import DB_PATH, title_is_excluded, is_marketplace_url
 
 # Thread-local connection storage — each thread gets its own connection
 # (required for SQLite thread safety with parallel workers)
@@ -96,6 +96,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             description           TEXT,
             location              TEXT,
             site                  TEXT,
+            company               TEXT,
             strategy              TEXT,
             discovered_at         TEXT,
 
@@ -129,7 +130,12 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             last_attempted_at     TEXT,
             apply_duration_ms     INTEGER,
             apply_task_id         TEXT,
-            verification_confidence TEXT
+            verification_confidence TEXT,
+            outcome               TEXT,
+            outcome_at            TEXT,
+            outcome_source        TEXT,
+            outcome_message_id    TEXT,
+            outcome_snippet       TEXT
         )
     """)
     conn.commit()
@@ -150,8 +156,9 @@ _ALL_COLUMNS: dict[str, str] = {
     "salary": "TEXT",
     "description": "TEXT",
     "location": "TEXT",
-    "site": "TEXT",
-    "strategy": "TEXT",
+            "site": "TEXT",
+            "company": "TEXT",
+            "strategy": "TEXT",
     "discovered_at": "TEXT",
     # Enrichment
     "full_description": "TEXT",
@@ -180,6 +187,12 @@ _ALL_COLUMNS: dict[str, str] = {
     "apply_duration_ms": "INTEGER",
     "apply_task_id": "TEXT",
     "verification_confidence": "TEXT",
+    # Post-apply email outcome tracking (Gmail readonly poll)
+    "outcome": "TEXT",
+    "outcome_at": "TEXT",
+    "outcome_source": "TEXT",
+    "outcome_message_id": "TEXT",
+    "outcome_snippet": "TEXT",
 }
 
 
@@ -347,6 +360,10 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
         url = job.get("url")
         if not url:
             continue
+        if title_is_excluded(job.get("title")):
+            continue
+        if is_marketplace_url(url) or is_marketplace_url(job.get("application_url")):
+            continue
         try:
             conn.execute(
                 "INSERT INTO jobs (url, title, salary, description, location, site, strategy, discovered_at) "
@@ -388,12 +405,23 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         "scored": "fit_score IS NOT NULL",
         "pending_tailor": (
             "fit_score >= ? AND full_description IS NOT NULL "
-            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5"
+            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5 "
+            # Only spend tailor tokens when Stage 6 has a real apply link (not LinkedIn/Indeed).
+            "AND application_url IS NOT NULL AND application_url LIKE 'http%' "
+            "AND LOWER(application_url) NOT LIKE '%linkedin.com%' "
+            "AND LOWER(application_url) NOT LIKE '%indeed.com%' "
+            "AND LOWER(application_url) NOT LIKE '%ziprecruiter%' "
+            "AND LOWER(application_url) NOT LIKE '%glassdoor.com%' "
+            "AND LOWER(application_url) NOT LIKE '%talent.com%' "
+            "AND LOWER(application_url) NOT LIKE '%simplyhired.com%' "
+            "AND LOWER(application_url) NOT LIKE '%dice.com%'"
         ),
         "tailored": "tailored_resume_path IS NOT NULL",
         "pending_apply": (
             "tailored_resume_path IS NOT NULL AND applied_at IS NULL "
-            "AND application_url IS NOT NULL"
+            "AND application_url IS NOT NULL AND application_url LIKE 'http%' "
+            "AND LOWER(application_url) NOT LIKE '%linkedin.com%' "
+            "AND LOWER(application_url) NOT LIKE '%indeed.com%'"
         ),
         "applied": "applied_at IS NOT NULL",
     }

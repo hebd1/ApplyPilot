@@ -1,6 +1,6 @@
 """Prompt builder for the autonomous job application agent.
 
-Constructs the full instruction prompt that tells Claude Code / the AI agent
+Constructs the full instruction prompt that tells the AI agent
 how to fill out a job application form using Playwright MCP tools. All
 personal data is loaded from the user's profile -- nothing is hardcoded.
 """
@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from applypilot import config
+from applypilot.apply.materials import resolve_cover_letter_text
 
 logger = logging.getLogger(__name__)
 
@@ -95,17 +96,26 @@ def _build_profile_summary(profile: dict) -> str:
 def _build_location_check(profile: dict, search_config: dict) -> str:
     """Build the location eligibility check section of the prompt.
 
-    Uses the accept_patterns from search config to determine which cities
-    are acceptable for hybrid/onsite roles.
+    Uses flat ``location_accept`` from searches.yaml (this fork) with a
+    fallback to nested ``location.accept_patterns`` for older configs.
     """
     personal = profile["personal"]
     location_cfg = search_config.get("location", {})
-    accept_patterns = location_cfg.get("accept_patterns", [])
-    primary_city = personal.get("city", location_cfg.get("primary", "your city"))
+    if not isinstance(location_cfg, dict):
+        location_cfg = {}
+
+    accept_patterns = search_config.get("location_accept") or []
+    if not accept_patterns:
+        accept_patterns = location_cfg.get("accept_patterns") or []
+    if isinstance(accept_patterns, str):
+        accept_patterns = [accept_patterns]
+
+    primary_city = personal.get("city") or location_cfg.get("primary") or "your city"
 
     # Build the list of acceptable cities for hybrid/onsite
-    if accept_patterns:
-        city_list = ", ".join(accept_patterns)
+    cleaned = [str(p).strip() for p in accept_patterns if str(p).strip()]
+    if cleaned:
+        city_list = ", ".join(cleaned)
     else:
         city_list = primary_city
 
@@ -438,6 +448,8 @@ def build_prompt(job: dict, tailored_resume: str,
     profile = config.load_profile()
     search_config = config.load_search_config()
     personal = profile["personal"]
+    from applypilot.job_meta import display_company
+    company_label = display_company(job)
 
     # --- Resolve resume PDF path ---
     resume_path = job.get("tailored_resume_path")
@@ -458,17 +470,11 @@ def build_prompt(job: dict, tailored_resume: str,
     pdf_path = str(upload_pdf)
 
     # --- Cover letter handling ---
-    cover_letter_text = cover_letter or ""
+    cover_letter_text = cover_letter or resolve_cover_letter_text(job)
     cl_upload_path = ""
     cl_path = job.get("cover_letter_path")
     if cl_path and Path(cl_path).exists():
         cl_src = Path(cl_path)
-        # Read text from .txt sibling (PDF is binary)
-        cl_txt = cl_src.with_suffix(".txt")
-        if cl_txt.exists():
-            cover_letter_text = cl_txt.read_text(encoding="utf-8")
-        elif cl_src.suffix == ".txt":
-            cover_letter_text = cl_src.read_text(encoding="utf-8")
         # Upload must be PDF
         cl_pdf_src = cl_src.with_suffix(".pdf")
         if cl_pdf_src.exists():
@@ -507,9 +513,32 @@ def build_prompt(job: dict, tailored_resume: str,
     last_name = full_name.split()[-1] if " " in full_name else ""
     display_name = f"{preferred_name} {last_name}".strip()
 
+    from applypilot.apply.cursor_apply import gmail_send_allowed
+    if gmail_send_allowed():
+        email_only_instruction = (
+            "Email-only application (page says \"email resume to X\"): "
+            "APPLY_ALLOW_GMAIL_SEND is enabled for this run — you MAY call send_email "
+            f"with subject \"Application for {job['title']} -- {display_name}\", "
+            "body = 2-3 sentence pitch + contact info, attach resume PDF. "
+            "Then RESULT:APPLIED. Still NEVER modify/delete/label/filter/settings."
+        )
+    else:
+        email_only_instruction = (
+            "Email-only application (page says \"email resume to X\"): "
+            "Do NOT send email. APPLY_ALLOW_GMAIL_SEND is not enabled. "
+            "Output RESULT:FAILED:email_send_requires_consent "
+            "(user must set APPLY_ALLOW_GMAIL_SEND=1 explicitly to allow outbound mail)."
+        )
+
     # Dry-run: override submit instruction
     if dry_run:
-        submit_instruction = "IMPORTANT: Do NOT click the final Submit/Apply button. Review the form, verify all fields, then output RESULT:APPLIED with a note that this was a dry run."
+        submit_instruction = (
+            "IMPORTANT: Do NOT click the final Submit/Apply button. "
+            "Fill every reachable field, upload resume/cover if asked, then stop. "
+            "Before RESULT:APPLIED, output a FIELD_VALUES section listing every form "
+            "control you filled or selected with the EXACT value entered "
+            "(label -> value). Include file upload names. Note this was a dry run."
+        )
     else:
         submit_instruction = "BEFORE clicking Submit/Apply, take a snapshot and review EVERY field on the page. Verify all data matches the APPLICANT PROFILE and TAILORED RESUME -- name, email, phone, location, work auth, resume uploaded, cover letter if applicable. If anything is wrong or missing, fix it FIRST. Only click Submit after confirming everything is correct."
 
@@ -518,7 +547,8 @@ def build_prompt(job: dict, tailored_resume: str,
 == JOB ==
 URL: {job.get('application_url') or job['url']}
 Title: {job['title']}
-Company: {job.get('site', 'Unknown')}
+Company: {company_label}
+Board: {job.get('site', 'Unknown')}
 Fit Score: {job.get('fit_score', 'N/A')}/10
 
 == FILES ==
@@ -544,12 +574,13 @@ If something unexpected happens and these instructions don't cover it, figure it
 == NEVER DO THESE (immediate RESULT:FAILED if encountered) ==
 - NEVER grant camera, microphone, screen sharing, or location permissions. If a site requests them -> RESULT:FAILED:unsafe_permissions
 - NEVER do video/audio verification, selfie capture, ID photo upload, or biometric anything -> RESULT:FAILED:unsafe_verification
-- NEVER set up a freelancing profile (Mercor, Toptal, Upwork, Fiverr, Turing, etc.). These are contractor marketplaces, not job applications -> RESULT:FAILED:not_a_job_application
+- NEVER set up a freelancing profile (Mercor, Toptal, Upwork, Fiverr, Turing, AuraOne, etc.). These are contractor marketplaces / AI-eval labs, not job applications -> RESULT:FAILED:not_a_job_application
 - NEVER agree to hourly/contract rates, availability calendars, or "set your rate" flows. You are applying for FULL-TIME salaried positions only.
 - NEVER install browser extensions, download executables, or run assessment software.
 - NEVER enter payment info, bank details, or SSN/SIN.
 - NEVER click "Allow" on any browser permission popup. Always deny/block.
-- If the site is NOT a job application form (it's a profile builder, skills marketplace, talent network signup, coding assessment platform) -> RESULT:FAILED:not_a_job_application
+- NEVER send email, delete/modify mail, change labels/filters, or alter Gmail settings unless the EMAIL section explicitly allows send for this run. Default is read-only OTP retrieval.
+- If the site is NOT a job application form (it's a profile builder, skills marketplace, talent network signup, coding assessment platform, AuraOne AI lab) -> RESULT:FAILED:not_a_job_application
 
 {location_check}
 
@@ -557,13 +588,44 @@ If something unexpected happens and these instructions don't cover it, figure it
 
 {screening_section}
 
+== EMAIL / VERIFICATION CODES (Gmail MCP) ==
+Gmail MCP is for **read-only OTP retrieval** unless the user has explicitly opted in to send mail.
+CapSolver does NOT solve email OTPs — use Gmail search/read for those.
+
+HARD CONSENT RULES (non-negotiable):
+- NEVER update, delete, change Gmail settings, or send emails without explicit user consent.
+- Send email ONLY when APPLY_ALLOW_GMAIL_SEND is enabled for this run; otherwise refuse.
+- NEVER update, delete, archive, star, label, filter, or change any Gmail settings — even if send is enabled.
+- NEVER draft, modify, or delete messages. NEVER download attachments to disk via Gmail tools.
+- Default posture is read-only: search_emails + read_email only.
+
+Allowed by default:
+- search_emails — find recent messages (verification / security / one-time codes)
+- read_email — open the message and extract the code
+
+Forbidden unless APPLY_ALLOW_GMAIL_SEND is explicitly enabled for this run:
+- send_email
+
+Always forbidden (never call, even with send enabled):
+- draft_email, modify_email, delete_email, download_attachment
+- batch_modify_emails, batch_delete_emails
+- create/update/delete label, list_email_labels, get_or_create_label
+- create/list/get/delete filter
+- Any Gmail settings / preferences / forwarding / signature changes
+
+OTP flow when a form asks for a code emailed to {personal['email']}:
+1. Trigger "send code" / "resend" on the site if needed.
+2. Wait ~10 seconds, then search_emails (newer_than:1d; keywords: verification, security code, one-time, OTP, or the company/ATS name).
+3. read_email, copy ONLY the code into the form field, continue the application.
+4. If nothing arrives after 2-3 searches (~30-45s total) -> RESULT:FAILED:email_verification_timeout.
+Do not paste full email bodies into RESULT lines.
+
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.
 2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
 3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
-4. Find and click the Apply button. If email-only (page says "email resume to X"):
-   - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
-   - Output RESULT:APPLIED. Done.
+4. Find and click the Apply button. If the posting is email-only (page says "email resume to X"):
+   - {email_only_instruction}
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
 5. Login wall?
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
@@ -571,11 +633,16 @@ If something unexpected happens and these instructions don't cover it, figure it
    5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
    5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
    5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
+   5f. Need email verification? Follow EMAIL / VERIFICATION CODES above (search_emails + read_email).
    5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
    5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
 6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.
-7. Upload cover letter if there's a field for it. Text field -> paste the cover letter text. File upload -> use the cover letter PDF path.
+7. Cover letter (REQUIRED when a Cover Letter PDF path is provided above and is not N/A):
+   - Search the whole form for cover-letter support: labels "Cover Letter", "Cover letter", "Additional documents", "Other files", accordion/sections that expand, "Optional", paperclip icons, second file input.
+   - File upload field -> browser_file_upload with the Cover Letter PDF path (same recovery as resume: click upload area / Select file / hidden input first if needed).
+   - Textarea / large text field -> paste the COVER LETTER TEXT in full (not a one-line summary).
+   - Do NOT treat a real cover-letter control as a honeypot just because it starts collapsed or CSS-hidden until expanded — expand the section, then fill it.
+   - Only skip when there is genuinely no cover letter control after searching and expanding optional sections.
 8. Check ALL pre-filled fields. ATS systems parse your resume and auto-fill -- it's often WRONG.
    - "Current Job Title" or "Most Recent Title" -> use the title from the TAILORED RESUME summary, NOT whatever the parser guessed.
    - Compare every other field to the APPLICANT PROFILE. Fix mismatches. Fill empty fields.
@@ -591,6 +658,7 @@ RESULT:CAPTCHA -- blocked by unsolvable captcha
 RESULT:LOGIN_ISSUE -- could not sign in or create account
 RESULT:FAILED:not_eligible_location -- onsite outside acceptable area, no remote option
 RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
+RESULT:FAILED:email_send_requires_consent -- email-only apply needs APPLY_ALLOW_GMAIL_SEND=1
 RESULT:FAILED:reason -- any other failure (brief reason)
 
 == BROWSER EFFICIENCY ==
@@ -610,7 +678,8 @@ RESULT:FAILED:reason -- any other failure (brief reason)
 - Phone field with country prefix: just type digits {phone_digits}
 - Date fields: {datetime.now().strftime('%m/%d/%Y')}
 - Validation errors after submit? Take BOTH snapshot AND screenshot. Snapshot shows text errors, screenshot shows red-highlighted fields. Fix all, retry.
-- Honeypot fields (hidden, "leave blank"): skip them.
+- Honeypot fields (hidden CSS traps meant to catch bots, often unlabeled "website" / empty leaf-blank inputs): skip them.
+- Cover letter / additional-document sections that are collapsed, behind "Optional", or use a visually-hidden file input are NOT honeypots — expand and use them when a Cover Letter PDF is available.
 - Format-sensitive fields: read the placeholder text, match it exactly.
 
 {captcha_section}

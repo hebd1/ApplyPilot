@@ -37,5 +37,28 @@ build/
 .DS_Store
 Thumbs.db
 
-# Claude Code
-.claude/
+# Local venv / tooling
+.venv/
+.playwright-mcp/
+
+# Debug / one-off artifacts (never commit)
+*.png
+*.jpg
+*.jpeg
+*.yml
+!**/sites.yaml
+!**/searches.example.yaml
+!**/greenhouse_boards.yaml
+!docs/**/*.md
+captcha_token.*
+cf-challenge*
+cf-solver*
+inject_*.js
+job-page.html
+job-page-snapshot.md
+form-check.md
+Eli_Hebdon_*.pdf
+
+# Temp smoke scripts
+scripts/_smoke_*.py
+scripts/_tmp_*.py

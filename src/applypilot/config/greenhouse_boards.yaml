@@ -1,0 +1,27 @@
+# Curated Greenhouse job boards for smart-extract discovery.
+# Add company boards that post roles matching your stack (Go/TS/Angular/backend).
+# URLs are scraped as static targets alongside sites.yaml remote boards.
+#
+# Find boards at: https://job-boards.greenhouse.io/<slug>
+# or https://boards.greenhouse.io/<slug>
+
+boards:
+  - name: "Greenhouse LeafLink"
+    url: "https://job-boards.greenhouse.io/leaflink"
+    type: static
+
+  - name: "Greenhouse GitLab"
+    url: "https://job-boards.greenhouse.io/gitlab"
+    type: static
+
+  - name: "Greenhouse HashiCorp"
+    url: "https://job-boards.greenhouse.io/hashicorp"
+    type: static
+
+  - name: "Greenhouse Cloudflare"
+    url: "https://boards.greenhouse.io/cloudflare"
+    type: static
+
+  - name: "Greenhouse Duolingo"
+    url: "https://job-boards.greenhouse.io/duolingo"
+    type: static
