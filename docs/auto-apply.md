@@ -102,10 +102,14 @@ After changing `.wslconfig`, run once: `wsl --shutdown`, then open WSL again.
 | `DAILY_APPLY_ATS_ONLY` / `APPLY_ATS_ONLY` | `1` | Only Greenhouse / Workday / Ashby |
 | `APPLY_SUCCESS_QUOTA` | `1` | Count only successful applies toward `-l` |
 | `DAILY_APPLY_EMAIL_POLL` | `1` | After apply, poll Gmail (readonly) for outcomes |
+| `DAILY_APPLY_LINKEDIN_REFRESH` | `1` | Refresh `LINKEDIN_LI_AT` from `linkedin-chrome` profile |
+| `DAILY_APPLY_REQUIRE_LINKEDIN` | `0` | Exit if LinkedIn refresh fails (default: warn + continue) |
 
 Logs: `~/.applypilot/logs/daily_apply-*.log`
 
-Daily flow: purge weak/excluded → tailor/cover/pdf → **one** ATS apply (success quota) → Gmail outcome poll → dashboard.
+Daily flow: LinkedIn cookie refresh → purge weak/excluded → tailor/cover/pdf → **one** ATS apply (success quota) → Gmail outcome poll → dashboard.
+
+If LinkedIn refresh fails, run `applypilot linkedin-auth --login` once on the desktop; later dailies can `--refresh` headlessly.
 
 Tailor/cover only process jobs with a usable ATS `application_url` (not LinkedIn/Indeed). Purge anytime:
 

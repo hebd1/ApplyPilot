@@ -16,6 +16,7 @@ LOG_FILE="$LOG_DIR/daily_apply-$TIMESTAMP.log"
 export DAILY_APPLY_ATS_ONLY="${DAILY_APPLY_ATS_ONLY:-1}"
 export APPLY_ATS_ONLY="${APPLY_ATS_ONLY:-$DAILY_APPLY_ATS_ONLY}"
 export APPLY_SUCCESS_QUOTA="${APPLY_SUCCESS_QUOTA:-1}"
+export APPLY_MAX_ATTEMPTS="${APPLY_MAX_ATTEMPTS:-8}"
 
 mkdir -p "$LOG_DIR"
 
@@ -32,7 +33,7 @@ cd "$REPO"
   echo "started: $(date -Is)"
   echo "repo:    $REPO"
   echo "limit:   $LIMIT success(es)  min_score: $MIN_SCORE"
-  echo "ats_only: $APPLY_ATS_ONLY  success_quota: $APPLY_SUCCESS_QUOTA"
+  echo "ats_only: $APPLY_ATS_ONLY  success_quota: $APPLY_SUCCESS_QUOTA  max_attempts: $APPLY_MAX_ATTEMPTS"
   echo "tz:      ${TZ:-$(cat /etc/timezone 2>/dev/null || echo unknown)}"
   echo
 
@@ -43,6 +44,38 @@ cd "$REPO"
 
   echo "==> purge unapplyable / excluded / stuck"
   "$REPO/.venv/bin/python" "$REPO/scripts/purge_unapplyable_queue.py" || echo "WARN: purge exited $?"
+
+  echo "==> gmail readonly preflight (OTP / verification links)"
+  if ! "$REPO/.venv/bin/python" - <<'PY'
+from applypilot.apply.cursor_apply import gmail_mcp_token_healthy
+ok, detail = gmail_mcp_token_healthy()
+print(detail)
+raise SystemExit(0 if ok else 1)
+PY
+  then
+    echo "ERROR: Gmail MCP token unhealthy — re-auth with: bash scripts/gmail_oauth_readonly.sh" >&2
+    echo "        Daily apply needs readonly Gmail for ATS email verification." >&2
+    if [[ "${DAILY_APPLY_REQUIRE_GMAIL:-1}" == "1" ]]; then
+      exit 1
+    fi
+    echo "WARN: continuing without healthy Gmail (DAILY_APPLY_REQUIRE_GMAIL=0)"
+  fi
+
+  # Refresh LinkedIn li_at from the persistent Chrome profile (non-interactive).
+  # Enables LinkedIn→ATS apply URL resolution during discover/enrich.
+  # If the profile is logged out, run: applypilot linkedin-auth --login
+  if [[ "${DAILY_APPLY_LINKEDIN_REFRESH:-1}" == "1" ]]; then
+    echo "==> linkedin session refresh"
+    if "$REPO/.venv/bin/applypilot" linkedin-auth --refresh; then
+      echo "    LinkedIn li_at refreshed"
+    else
+      echo "WARN: LinkedIn refresh failed — company-website apply URLs may not resolve"
+      echo "      Re-auth interactively: $REPO/.venv/bin/applypilot linkedin-auth --login"
+      if [[ "${DAILY_APPLY_REQUIRE_LINKEDIN:-0}" == "1" ]]; then
+        exit 1
+      fi
+    fi
+  fi
 
   # Optional: refresh discovery before scoring (off by default — slow / flaky).
   if [[ "${DAILY_APPLY_DISCOVER:-0}" == "1" ]]; then

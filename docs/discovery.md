@@ -86,6 +86,8 @@ LinkedIn discovery is enabled in `searches.example.yaml`. Enrich parses LinkedIn
 .venv/bin/applypilot linkedin-auth --check     # validate current cookie
 ```
 
+`scripts/daily_apply.sh` runs `--refresh` automatically each morning (`DAILY_APPLY_LINKEDIN_REFRESH=1`).
+
 Or set `LINKEDIN_LI_AT` in `~/.applypilot/.env`. Easy Apply-only jobs stay manual.
 
 ## Source strategy (bot detection vs automation)
