@@ -158,17 +158,27 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
 
         strategy = "jobspy"
 
-        # If JobSpy gave us a full description, promote it directly
+        # Extract apply URL if JobSpy provided it (LinkedIn: off-site ATS target)
+        apply_url = str(row.get("job_url_direct", "")) if str(row.get("job_url_direct", "")) != "nan" else None
+        if apply_url:
+            from applypilot.job_meta import normalize_board_apply_url
+            apply_url = normalize_board_apply_url(apply_url, follow=True) or apply_url
+
+        if config.is_marketplace_url(url) or config.is_marketplace_url(apply_url):
+            continue
+
+        # Promote JobSpy descriptions, but only mark detail complete when the
+        # apply URL is a real ATS/career link. Board listings (esp. LinkedIn)
+        # often ship a JD with a missing/board apply URL — leave them pending
+        # so enrich can resolve the off-site redirect target.
         full_description = None
         detail_scraped_at = None
         if description and len(description) > 200:
             full_description = description
-            detail_scraped_at = now
-
-        # Extract apply URL if JobSpy provided it
-        apply_url = str(row.get("job_url_direct", "")) if str(row.get("job_url_direct", "")) != "nan" else None
-        if config.is_marketplace_url(url) or config.is_marketplace_url(apply_url):
-            continue
+            from applypilot.job_meta import classify_apply_url
+            usable, _ = classify_apply_url(apply_url)
+            if usable:
+                detail_scraped_at = now
 
         try:
             conn.execute(

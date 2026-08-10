@@ -69,9 +69,11 @@ location_reject_non_remote:
 country: "USA"
 
 # JobSpy source boards (code reads `sites`, not `boards`)
-# Prefer Indeed + ZipRecruiter for volume; LinkedIn is high bot-friction / weak apply URLs.
+# LinkedIn often matches experience better; company-website applies resolve to
+# Greenhouse/Workday/Ashby URLs for Stage 6. Easy Apply-only posts stay manual.
 sites:
   - indeed
+  - linkedin
   - zip_recruiter
 
 # Search defaults
@@ -95,6 +97,8 @@ exclude_titles:
   - "software development engineer in test"
   - "cloud engineer"
   - "devops"
+  - "devsecops"
+  - "dev sec ops"
   - "dev ops"
   - "sre"
   - "site reliability"

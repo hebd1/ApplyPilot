@@ -28,6 +28,8 @@ bash scripts/<script>.sh               # Shell scripts
 
 | `test_cursor_provider.py` | No | Provider detection unit check |
 
+| `test_linkedin_apply_resolve.py` | Optional | LinkedIn → ATS apply URL parse/resolve checks |
+
 | `live_cursor_score_test.py` | Yes | Live Cursor Auto scoring smoke test |
 
 | `score_one_job.py` | Yes | Score one job from `~/.applypilot/applypilot.db` |
