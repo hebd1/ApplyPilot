@@ -335,6 +335,95 @@ def dashboard() -> None:
     open_dashboard()
 
 
+@app.command("linkedin-auth")
+def linkedin_auth(
+    set_cookie: Optional[str] = typer.Option(
+        None, "--set", help="Save a pasted li_at cookie to ~/.applypilot/.env",
+    ),
+    check: bool = typer.Option(False, "--check", help="Validate the current cookie only."),
+    refresh: bool = typer.Option(
+        False, "--refresh",
+        help="Pull a rotated li_at from the persistent LinkedIn Chrome profile.",
+    ),
+    login: bool = typer.Option(
+        False, "--login",
+        help="Open Chrome and wait for you to sign in to LinkedIn.",
+    ),
+    timeout: int = typer.Option(300, "--timeout", help="Seconds to wait for interactive login."),
+    headless_refresh: bool = typer.Option(
+        True, "--headless-refresh/--headed-refresh",
+        help="Run profile refresh headless (default) or headed.",
+    ),
+) -> None:
+    """Capture or refresh the LinkedIn li_at cookie used for ATS URL resolution.
+
+    Cookies expire. Prefer --login once (saves a persistent Chrome profile), then
+    --refresh later to pull rotated cookies without pasting. Never commit li_at.
+    """
+    _bootstrap()
+    from applypilot.discovery import linkedin_auth as li_auth
+
+    if set_cookie:
+        path = li_auth.save_li_at(set_cookie)
+        ok, reason = li_auth.cookie_looks_valid()
+        status = "[green]valid[/green]" if ok else f"[yellow]saved but {reason}[/yellow]"
+        console.print(f"Saved LINKEDIN_LI_AT to {path} ({status})")
+        return
+
+    if check:
+        present = bool(li_auth.get_li_at())
+        if not present:
+            console.print("[red]No LINKEDIN_LI_AT in env.[/red] Run: applypilot linkedin-auth --login")
+            raise typer.Exit(code=1)
+        ok, reason = li_auth.cookie_looks_valid()
+        if ok:
+            console.print(f"[green]LinkedIn cookie OK[/green] ({reason})")
+            raise typer.Exit(code=0)
+        console.print(f"[red]LinkedIn cookie invalid[/red] ({reason})")
+        console.print("Refresh: [bold]applypilot linkedin-auth --refresh[/bold]")
+        console.print("Or login: [bold]applypilot linkedin-auth --login[/bold]")
+        raise typer.Exit(code=1)
+
+    if refresh:
+        console.print("Refreshing li_at from persistent LinkedIn Chrome profile...")
+        token = li_auth.refresh_li_at_from_profile(headless=headless_refresh)
+        if not token:
+            console.print("[red]Profile has no LinkedIn session.[/red] Run: applypilot linkedin-auth --login")
+            raise typer.Exit(code=1)
+        ok, reason = li_auth.cookie_looks_valid(token)
+        if ok:
+            console.print(f"[green]Refreshed LINKEDIN_LI_AT[/green] ({reason})")
+            raise typer.Exit(code=0)
+        console.print(f"[yellow]Saved cookie but validation failed ({reason}). Try --login.[/yellow]")
+        raise typer.Exit(code=1)
+
+    if login:
+        console.print(
+            "Opening LinkedIn in Chrome. Sign in if prompted; "
+            f"waiting up to {timeout}s for li_at..."
+        )
+        try:
+            li_auth.interactive_login(timeout_sec=timeout, headed=True)
+        except TimeoutError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        ok, reason = li_auth.cookie_looks_valid()
+        if ok:
+            console.print(f"[green]LinkedIn login captured[/green] ({reason})")
+            raise typer.Exit(code=0)
+        console.print(f"[yellow]Cookie saved but validation failed ({reason}).[/yellow]")
+        raise typer.Exit(code=1)
+
+    # Default: validate → refresh profile → interactive login if needed
+    console.print("Ensuring LinkedIn session...")
+    token, status = li_auth.ensure_li_at(allow_interactive=True, timeout_sec=timeout)
+    if token:
+        console.print(f"[green]LinkedIn session ready[/green] ({status})")
+        raise typer.Exit(code=0)
+    console.print(f"[red]Could not obtain LinkedIn session[/red] ({status})")
+    raise typer.Exit(code=1)
+
+
 @app.command()
 def doctor() -> None:
     """Check your setup and diagnose missing requirements."""
@@ -461,14 +550,38 @@ def doctor() -> None:
         results.append(("CapSolver API key", "[dim]optional[/dim]",
                         "Set CAPSOLVER_API_KEY in .env for CAPTCHA solving"))
 
-    # Gmail MCP OAuth (optional until a site asks for email OTP)
-    from applypilot.apply.cursor_apply import gmail_mcp_authenticated, gmail_mcp_credentials_path
-    if gmail_mcp_authenticated():
-        results.append(("Gmail MCP auth", ok_mark, str(gmail_mcp_credentials_path())))
+    # LinkedIn apply-URL session cookie (optional; expires — refresh via linkedin-auth)
+    from applypilot.discovery import linkedin_auth as li_auth
+    if li_auth.get_li_at():
+        ok_li, detail_li = li_auth.cookie_looks_valid()
+        if ok_li:
+            results.append(("LinkedIn li_at", ok_mark,
+                            f"{detail_li} — refresh: applypilot linkedin-auth --refresh"))
+        else:
+            results.append(("LinkedIn li_at", fail_mark,
+                            f"{detail_li} — run: applypilot linkedin-auth --refresh or --login"))
     else:
-        results.append(("Gmail MCP auth", "[dim]optional[/dim]",
-                        "Prefer bash scripts/gmail_oauth_readonly.sh "
-                        "(stock MCP auth requests modify/settings; we want readonly OTP). "
+        results.append(("LinkedIn li_at", "[dim]optional[/dim]",
+                        "For LinkedIn→ATS URL resolve: applypilot linkedin-auth --login"))
+
+    # Gmail MCP OAuth — required for ATS email OTP / verification links during apply
+    from applypilot.apply.cursor_apply import (
+        gmail_mcp_authenticated,
+        gmail_mcp_credentials_path,
+        gmail_mcp_token_healthy,
+    )
+    if gmail_mcp_authenticated():
+        ok, detail = gmail_mcp_token_healthy()
+        if ok:
+            results.append(("Gmail MCP auth", ok_mark, f"{gmail_mcp_credentials_path()} ({detail})"))
+        else:
+            results.append(("Gmail MCP auth", fail_mark,
+                            f"token dead — {detail}. Re-run: bash scripts/gmail_oauth_readonly.sh"))
+    else:
+        results.append(("Gmail MCP auth", fail_mark,
+                        "Missing ~/.gmail-mcp/credentials.json. "
+                        "Run: bash scripts/gmail_oauth_readonly.sh "
+                        "(readonly OTP / verify-link access; "
                         "APPLY_ALLOW_GMAIL_SEND=1 only with explicit consent to send)"))
 
     # --- Render results ---

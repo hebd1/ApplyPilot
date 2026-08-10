@@ -215,7 +215,7 @@ def parse_linkedin_apply_url_from_html(html: str | None) -> str | None:
 
     match = _LINKEDIN_APPLY_URL_RE.search(blob)
     if match:
-        return unquote(match.group(0)).strip().rstrip('"').rstrip("'")
+        return _clean_apply_url(unquote(match.group(0)).strip().rstrip('"').rstrip("'"))
 
     # Fallback: explicit url= query inside applyUrl-ish JSON/text.
     for key in ("applyUrl", "companyApplyUrl", "externalApplyUrl"):
@@ -223,21 +223,37 @@ def parse_linkedin_apply_url_from_html(html: str | None) -> str | None:
         if qm:
             candidate = unquote(unescape(qm.group(1))).strip()
             if candidate.startswith("http"):
-                return candidate
+                return _clean_apply_url(candidate)
     return None
+
+
+def _clean_apply_url(url: str) -> str:
+    """Normalize leaked JSON escapes and trailing junk in apply targets."""
+    cleaned = (
+        url.replace("\\u0026", "&")
+        .replace("\\u002f", "/")
+        .replace("\\/", "/")
+        .replace("\\u003d", "=")
+        .replace("\\u003f", "?")
+        .rstrip("\\")
+        .strip()
+        .rstrip('"')
+        .rstrip("'")
+    )
+    return cleaned
 
 
 def _linkedin_li_at_cookie() -> str | None:
     """Optional LinkedIn session cookie for off-site apply resolution."""
-    import os
-
     try:
-        from applypilot.config import load_env
-        load_env()
+        from applypilot.discovery.linkedin_auth import get_li_at
+        return get_li_at()
     except Exception:
-        pass
-    raw = (os.environ.get("LINKEDIN_LI_AT") or os.environ.get("APPLYPILOT_LINKEDIN_LI_AT") or "").strip()
-    return raw or None
+        from applypilot.config import load_env
+        import os
+        load_env()
+        raw = (os.environ.get("LINKEDIN_LI_AT") or os.environ.get("APPLYPILOT_LINKEDIN_LI_AT") or "").strip()
+        return raw or None
 
 
 def _http_get(url: str, timeout: float = 15.0, cookie: str | None = None) -> tuple[str, str]:
@@ -282,18 +298,18 @@ def resolve_linkedin_apply_url(
     """Resolve a LinkedIn job listing to an off-site ATS/career apply URL.
 
     Public LinkedIn pages often omit the company apply target (sign-in wall).
-    Set ``LINKEDIN_LI_AT`` in ``~/.applypilot/.env`` to your LinkedIn ``li_at``
-    session cookie so company-website applies can be resolved. Easy Apply-only
-    posts still return None.
+    Set ``LINKEDIN_LI_AT`` in ``~/.applypilot/.env`` (or run
+    ``applypilot linkedin-auth``) so company-website applies can be resolved.
+    Easy Apply-only posts still return None.
     """
     apply_url = parse_linkedin_apply_url_from_html(html) if html else None
     li_at = _linkedin_li_at_cookie()
-    cookie = f"li_at={li_at}" if li_at else None
+    cookie_header = f"li_at={li_at}" if li_at else None
 
     view = linkedin_job_view_url(job_url)
     job_id = linkedin_job_id(job_url)
 
-    def _try_fetch(url: str) -> str | None:
+    def _try_fetch(url: str, cookie: str | None) -> str | None:
         try:
             _final, page_html = _http_get(url, timeout=timeout, cookie=cookie)
         except Exception as exc:
@@ -302,22 +318,45 @@ def resolve_linkedin_apply_url(
         return parse_linkedin_apply_url_from_html(page_html)
 
     if not apply_url and view:
-        apply_url = _try_fetch(view)
+        apply_url = _try_fetch(view, cookie_header)
 
     # Guest jobPosting endpoint sometimes still embeds apply targets.
     if not apply_url and job_id:
         apply_url = _try_fetch(
-            f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+            f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}",
+            cookie_header,
         )
 
     if not apply_url:
-        if not cookie:
+        if not li_at:
             log.debug(
                 "LinkedIn apply URL unavailable without session cookie "
-                "(set LINKEDIN_LI_AT) for %s",
+                "(run: applypilot linkedin-auth --login) for %s",
                 view or job_url,
             )
-        return None
+        else:
+            # Cookie may have expired — try one profile refresh, then retry once.
+            try:
+                from applypilot.discovery.linkedin_auth import (
+                    cookie_looks_valid,
+                    refresh_li_at_from_profile,
+                )
+                ok_cookie, _ = cookie_looks_valid(li_at)
+                if not ok_cookie:
+                    refreshed = refresh_li_at_from_profile(headless=True)
+                    if refreshed:
+                        cookie_header = f"li_at={refreshed}"
+                        if view:
+                            apply_url = _try_fetch(view, cookie_header)
+                        if not apply_url and job_id:
+                            apply_url = _try_fetch(
+                                f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}",
+                                cookie_header,
+                            )
+            except Exception as exc:
+                log.debug("LinkedIn cookie refresh skipped: %s", exc)
+        if not apply_url:
+            return None
 
     final = follow_apply_redirects(apply_url, timeout=timeout) if follow else apply_url
     ok, _reason = classify_apply_url(final)
