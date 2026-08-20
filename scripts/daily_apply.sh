@@ -8,9 +8,26 @@ APP_DIR="${APPLYPILOT_DIR:-$HOME/.applypilot}"
 LOG_DIR="$APP_DIR/logs"
 LIMIT="${DAILY_APPLY_LIMIT:-1}"
 MIN_SCORE="${DAILY_APPLY_MIN_SCORE:-8}"
-LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/applypilot-daily-apply.lock"
+# Stable path so Windows Task + cron share one lock (XDG_RUNTIME_DIR differs).
+LOCK_FILE="$LOG_DIR/daily_apply.lock"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 LOG_FILE="$LOG_DIR/daily_apply-$TIMESTAMP.log"
+
+write_health() {
+  # status, reason, optional detail
+  APPLY_HEALTH_STATUS="$1" APPLY_HEALTH_REASON="$2" APPLY_HEALTH_DETAIL="${3:-}" \
+  APPLY_HEALTH_LOG="$LOG_FILE" \
+  "$REPO/.venv/bin/python" -c '
+import os
+from applypilot.apply.health import write_apply_health
+write_apply_health(
+    status=os.environ["APPLY_HEALTH_STATUS"],
+    reason=os.environ["APPLY_HEALTH_REASON"],
+    detail=os.environ.get("APPLY_HEALTH_DETAIL", ""),
+    log_file=os.environ.get("APPLY_HEALTH_LOG", ""),
+)
+' || true
+}
 
 # Quality gates for Stage 6 (acquire_job / worker_loop)
 export DAILY_APPLY_ATS_ONLY="${DAILY_APPLY_ATS_ONLY:-1}"
@@ -56,6 +73,7 @@ PY
     echo "ERROR: Gmail MCP token unhealthy — re-auth with: bash scripts/gmail_oauth_readonly.sh" >&2
     echo "        Daily apply needs readonly Gmail for ATS email verification." >&2
     if [[ "${DAILY_APPLY_REQUIRE_GMAIL:-1}" == "1" ]]; then
+      write_health blocked gmail_auth_required "Token expired or revoked. Re-run: bash scripts/gmail_oauth_readonly.sh"
       exit 1
     fi
     echo "WARN: continuing without healthy Gmail (DAILY_APPLY_REQUIRE_GMAIL=0)"
@@ -96,7 +114,13 @@ PY
   fi
 
   echo "==> apply --headless -l $LIMIT (min-score $MIN_SCORE, success quota)"
-  "$REPO/.venv/bin/applypilot" apply --headless -l "$LIMIT" -w 1 --min-score "$MIN_SCORE"
+  if "$REPO/.venv/bin/applypilot" apply --headless -l "$LIMIT" -w 1 --min-score "$MIN_SCORE"; then
+    write_health ok applied "Daily apply finished"
+  else
+    apply_rc=$?
+    write_health error apply_failed "applypilot apply exited $apply_rc"
+    exit "$apply_rc"
+  fi
 
   if [[ "${DAILY_APPLY_EMAIL_POLL:-1}" == "1" ]]; then
     echo "==> poll application emails (Gmail readonly)"

@@ -287,6 +287,37 @@ def _grouped_job_sections(jobs: list, score_dist: dict[int, int]) -> str:
     return sections
 
 
+def _apply_health_banner_html() -> str:
+    """Red banner when daily apply is blocked or Gmail is dead."""
+    from applypilot.apply.cursor_apply import gmail_mcp_token_healthy
+    from applypilot.apply.health import apply_is_blocked, read_apply_health
+
+    health = read_apply_health()
+    gmail_ok, gmail_detail = gmail_mcp_token_healthy()
+    if not gmail_ok:
+        return (
+            '<div class="health-banner health-blocked">'
+            "<strong>Daily apply is blocked — Gmail token expired or revoked.</strong> "
+            "Morning applies exit before submitting. Re-auth with "
+            "<code>bash scripts/gmail_oauth_readonly.sh</code>, then "
+            "<code>applypilot doctor</code> and "
+            "<code>bash scripts/daily_apply.sh</code>. "
+            f"<span class='health-detail'>{escape(gmail_detail)}</span>"
+            "</div>"
+        )
+    if apply_is_blocked(health):
+        reason = escape(str(health.get("reason") or "blocked"))
+        detail = escape(str(health.get("detail") or ""))
+        updated = escape(str(health.get("updated_at") or "")[:19])
+        return (
+            '<div class="health-banner health-blocked">'
+            f"<strong>Daily apply is blocked ({reason}).</strong> {detail} "
+            f"<span class='health-detail'>{updated}</span>"
+            "</div>"
+        )
+    return ""
+
+
 def generate_dashboard(output_path: str | None = None) -> str:
     """Generate an HTML dashboard of all jobs with fit scores.
 
@@ -299,6 +330,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
     out = Path(output_path) if output_path else APP_DIR / "dashboard.html"
 
     conn = get_connection()
+    health_banner = _apply_health_banner_html()
 
     total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
     ready = conn.execute(
@@ -326,6 +358,16 @@ def generate_dashboard(output_path: str | None = None) -> str:
         "AND (apply_status IS NULL OR apply_status = '' OR apply_status = 'failed') "
         "AND (apply_attempts IS NULL OR apply_attempts < 3)"
     ).fetchone()[0]
+    last_applied_row = conn.execute(
+        "SELECT applied_at FROM jobs "
+        "WHERE apply_status = 'applied' OR applied_at IS NOT NULL "
+        "ORDER BY datetime(applied_at) DESC LIMIT 1"
+    ).fetchone()
+    last_applied_label = (
+        last_applied_row["applied_at"][:10]
+        if last_applied_row and last_applied_row["applied_at"]
+        else "never"
+    )
 
     score_dist: dict[int, int] = {}
     if scored:
@@ -542,6 +584,10 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .job-count {{ color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem; }}
   .empty-state {{ color: #64748b; padding: 2rem 0; }}
   .hint {{ color: #64748b; font-size: 0.85rem; margin-bottom: 1rem; }}
+  .health-banner {{ border-radius: 10px; padding: 0.9rem 1.1rem; margin-bottom: 1.25rem; line-height: 1.45; }}
+  .health-banner.health-blocked {{ background: #7f1d1d; color: #fecaca; border: 1px solid #f87171; }}
+  .health-banner code {{ background: #450a0a; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }}
+  .health-banner .health-detail {{ display: block; margin-top: 0.4rem; color: #fca5a5; font-size: 0.8rem; }}
 
   @media (max-width: 768px) {{
     .score-section {{ grid-template-columns: 1fr; }}
@@ -556,9 +602,11 @@ def generate_dashboard(output_path: str | None = None) -> str:
 <div class="topbar">
   <div>
     <h1>ApplyPilot</h1>
-    <p class="subtitle">{total} jobs &middot; {scored} scored &middot; {applied_count} applied &middot; {high_fit} strong matches</p>
+    <p class="subtitle">{total} jobs &middot; {scored} scored &middot; {applied_count} applied &middot; last apply {last_applied_label} &middot; {high_fit} strong matches</p>
   </div>
 </div>
+
+{health_banner}
 
 <nav class="modules" aria-label="Dashboard modules">
   <button class="module-btn active" data-module="overview" onclick="showModule('overview')">Overview</button>

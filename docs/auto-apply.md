@@ -104,8 +104,13 @@ After changing `.wslconfig`, run once: `wsl --shutdown`, then open WSL again.
 | `DAILY_APPLY_EMAIL_POLL` | `1` | After apply, poll Gmail (readonly) for outcomes |
 | `DAILY_APPLY_LINKEDIN_REFRESH` | `1` | Refresh `LINKEDIN_LI_AT` from `linkedin-chrome` profile |
 | `DAILY_APPLY_REQUIRE_LINKEDIN` | `0` | Exit if LinkedIn refresh fails (default: warn + continue) |
+| `DAILY_APPLY_REQUIRE_GMAIL` | `1` | Exit before apply if the Gmail MCP refresh token is dead |
 
 Logs: `~/.applypilot/logs/daily_apply-*.log`
+
+Daily apply writes `~/.applypilot/apply_health.json` so `applypilot status` and the HTML dashboard can show a blocker (for example a revoked Gmail token) instead of looking idle.
+
+If morning applies stop, check that file and the latest `daily_apply-*.log` first. A Gmail `invalid_grant` / “Token has been expired or revoked” error means re-run `bash scripts/gmail_oauth_readonly.sh` on the desktop (browser consent), then `applypilot doctor` and either wait for 08:00 or run `bash scripts/daily_apply.sh`.
 
 Daily flow: LinkedIn cookie refresh → purge weak/excluded → tailor/cover/pdf → **one** ATS apply (success quota) → Gmail outcome poll → dashboard.
 
@@ -261,6 +266,7 @@ ApplyPilot still **instructs and configures the agent for read-only OTP use** re
 | `NO RESULT` in ~4s | Cursor SDK connectivity error | Check CURSOR_API_KEY quota |
 | `Queue empty` with `--url` | Old NULL SQL bug or no match | Update launcher; confirm URL in DB |
 | CAPTCHA | Site blocks automation | Set `CAPSOLVER_API_KEY`; otherwise mark failed / apply manually |
+| Daily apply exits at Gmail preflight / `invalid_grant` | Refresh token expired or revoked | `bash scripts/gmail_oauth_readonly.sh` then `applypilot doctor` |
 | Email security code | OTP in Gmail | Complete Gmail MCP OAuth above; agent uses search/read only |
 | `email_send_requires_consent` | Email-only job, send disabled | Set `APPLY_ALLOW_GMAIL_SEND=1` only if you intend to allow outbound mail |
 | `RESULT:FAILED:not_eligible_location` | Agent correctly refused remote/hybrid mismatch | Expected — pick a remote-eligible job |

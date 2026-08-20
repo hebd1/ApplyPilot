@@ -290,6 +290,41 @@ def status() -> None:
 
     console.print(summary)
 
+    from applypilot.apply.cursor_apply import gmail_mcp_token_healthy
+    from applypilot.apply.health import apply_is_blocked, read_apply_health
+    from applypilot.database import get_connection
+
+    last_applied = get_connection().execute(
+        "SELECT applied_at, title, company FROM jobs "
+        "WHERE apply_status = 'applied' OR applied_at IS NOT NULL "
+        "ORDER BY datetime(applied_at) DESC LIMIT 1"
+    ).fetchone()
+    if last_applied and last_applied["applied_at"]:
+        console.print(
+            f"  Last applied: [bold]{last_applied['applied_at'][:19].replace('T', ' ')}[/bold]  "
+            f"[dim]{last_applied['title'] or ''}[/dim]"
+        )
+    else:
+        console.print("  Last applied: [dim]none[/dim]")
+
+    gmail_ok, gmail_detail = gmail_mcp_token_healthy()
+    health = read_apply_health()
+    if not gmail_ok:
+        console.print(
+            f"  [red]Daily apply blocked:[/red] Gmail token is dead ({gmail_detail}). "
+            "Re-run: [bold]bash scripts/gmail_oauth_readonly.sh[/bold]"
+        )
+    elif apply_is_blocked(health):
+        console.print(
+            f"  [red]Daily apply blocked:[/red] {health.get('reason', 'unknown')} — "
+            f"{health.get('detail') or health.get('updated_at') or ''}"
+        )
+    elif health:
+        console.print(
+            f"  Daily apply health: [green]{health.get('status', 'ok')}[/green]  "
+            f"[dim]{health.get('updated_at', '')}[/dim]"
+        )
+
     # Score distribution
     if stats["score_distribution"]:
         dist_table = Table(title="\nScore Distribution", show_header=True, header_style="bold yellow")

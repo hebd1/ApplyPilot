@@ -79,7 +79,7 @@ Generates `~/.applypilot/dashboard.html` with clickable top modules:
 
 | Module | Contents |
 |--------|----------|
-| **Overview** | Pipeline counts, score distribution, source breakdown |
+| **Overview** | Pipeline counts, score distribution, source breakdown; red banner when daily apply is blocked (expired Gmail token, etc.) |
 | **Jobs** | Scored listings (5+), filterable by score / search |
 | **Applied** | Submitted applications with status, timestamps, JD, materials |
 | **Failed** | Failed / skipped apply attempts (CAPTCHA, location, host skips, etc.) |
