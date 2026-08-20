@@ -104,11 +104,17 @@ PY
   # Prepare materials for already high-scoring jobs only.
   # Do NOT run `score` here — unscored backlog can be 1000+ jobs and blocks apply for hours.
   if [[ "${DAILY_APPLY_PREP:-1}" == "1" ]]; then
-    echo "==> tailor cover pdf (skip score; set DAILY_APPLY_SCORE=1 to include)"
+    echo "==> tailor cover pdf (capped score; set DAILY_APPLY_SCORE=1 for full backlog)"
     stages=(tailor cover pdf)
+    score_limit="${DAILY_APPLY_SCORE_LIMIT:-8}"
     if [[ "${DAILY_APPLY_SCORE:-0}" == "1" ]]; then
       stages=(score tailor cover pdf)
       echo "    (DAILY_APPLY_SCORE=1 — scoring entire unscored backlog)"
+    elif [[ "${score_limit}" != "0" ]]; then
+      stages=(score tailor cover pdf)
+      export SCORE_LIMIT="$score_limit"
+      export DAILY_APPLY_SCORE_LIMIT="$score_limit"
+      echo "    (scoring at most $score_limit unscored jobs — DAILY_APPLY_SCORE_LIMIT)"
     fi
     "$REPO/.venv/bin/applypilot" run "${stages[@]}" || echo "WARN: prep exited $?"
   fi

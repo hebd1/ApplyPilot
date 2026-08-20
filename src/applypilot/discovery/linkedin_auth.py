@@ -235,10 +235,12 @@ def _read_li_at_via_cdp(port: int = LINKEDIN_CDP_PORT) -> str | None:
 def refresh_li_at_from_profile(*, headless: bool = True, port: int = LINKEDIN_CDP_PORT) -> str | None:
     """Pull a fresh li_at from the persistent LinkedIn Chrome profile.
 
-    Returns the cookie when found and saves it to ``.env``. Returns None when
-    the profile is logged out.
+    Returns the cookie when found and saves it to ``.env``. If the profile is
+    logged out but ``LINKEDIN_LI_AT`` still validates, re-seed the profile and
+    return that cookie so enrich can keep resolving apply URLs.
     """
     proc = None
+    token = None
     try:
         proc = _launch_linkedin_chrome(headless=headless, port=port)
         from playwright.sync_api import sync_playwright
@@ -256,9 +258,22 @@ def refresh_li_at_from_profile(*, headless: bool = True, port: int = LINKEDIN_CD
         if token:
             save_li_at(token)
             return token
-        return None
     finally:
         _stop_chrome(proc, port=port)
+
+    # Profile logged out — keep using a still-valid .env cookie and try to re-seed
+    # the Chrome profile so later --refresh calls can rotate it.
+    existing = get_li_at()
+    if existing:
+        ok, _reason = cookie_looks_valid(existing)
+        if ok:
+            try:
+                seed_profile_with_li_at(existing, port=port)
+                log.info("LinkedIn profile had no session; re-seeded from LINKEDIN_LI_AT")
+            except Exception as exc:
+                log.debug("Could not re-seed LinkedIn Chrome profile: %s", exc)
+            return existing
+    return None
 
 
 def interactive_login(

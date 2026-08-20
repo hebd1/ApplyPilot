@@ -423,11 +423,13 @@ def linkedin_auth(
         console.print("Refreshing li_at from persistent LinkedIn Chrome profile...")
         token = li_auth.refresh_li_at_from_profile(headless=headless_refresh)
         if not token:
-            console.print("[red]Profile has no LinkedIn session.[/red] Run: applypilot linkedin-auth --login")
+            console.print("[red]Profile has no LinkedIn session and LINKEDIN_LI_AT is missing or invalid.[/red]")
+            console.print("Run: [bold]applypilot linkedin-auth --login[/bold]")
             raise typer.Exit(code=1)
         ok, reason = li_auth.cookie_looks_valid(token)
         if ok:
-            console.print(f"[green]Refreshed LINKEDIN_LI_AT[/green] ({reason})")
+            console.print(f"[green]LinkedIn li_at ready[/green] ({reason})")
+            console.print("[dim]If morning --refresh used to fail, the .env cookie was re-seeded into linkedin-chrome.[/dim]")
             raise typer.Exit(code=0)
         console.print(f"[yellow]Saved cookie but validation failed ({reason}). Try --login.[/yellow]")
         raise typer.Exit(code=1)
@@ -574,7 +576,15 @@ def doctor() -> None:
                 data = json.loads(resp.read().decode())
             if data.get("errorId") == 0:
                 bal = data.get("balance")
-                results.append(("CapSolver API key", ok_mark, f"balance ${bal}"))
+                try:
+                    low = float(bal) < 2
+                except (TypeError, ValueError):
+                    low = False
+                if low:
+                    results.append(("CapSolver API key", warn_mark,
+                                    f"balance ${bal} — replenish before CAPTCHA jobs fail"))
+                else:
+                    results.append(("CapSolver API key", ok_mark, f"balance ${bal}"))
             else:
                 results.append(("CapSolver API key", fail_mark,
                                 f"{data.get('errorCode') or 'invalid key'}"))
@@ -591,10 +601,10 @@ def doctor() -> None:
         ok_li, detail_li = li_auth.cookie_looks_valid()
         if ok_li:
             results.append(("LinkedIn li_at", ok_mark,
-                            f"{detail_li} — refresh: applypilot linkedin-auth --refresh"))
+                            f"{detail_li} — .env cookie valid; --refresh re-seeds linkedin-chrome if needed"))
         else:
             results.append(("LinkedIn li_at", fail_mark,
-                            f"{detail_li} — run: applypilot linkedin-auth --refresh or --login"))
+                            f"{detail_li} — run: applypilot linkedin-auth --login"))
     else:
         results.append(("LinkedIn li_at", "[dim]optional[/dim]",
                         "For LinkedIn→ATS URL resolve: applypilot linkedin-auth --login"))

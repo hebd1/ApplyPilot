@@ -97,7 +97,8 @@ After changing `.wslconfig`, run once: `wsl --shutdown`, then open WSL again.
 | `DAILY_APPLY_LIMIT` | `1` | Max **successful** applications per run |
 | `DAILY_APPLY_MIN_SCORE` | `8` | Fit score floor for daily quality gate |
 | `DAILY_APPLY_PREP` | `1` | Run `tailor cover pdf` first |
-| `DAILY_APPLY_SCORE` | `0` | Also score entire unscored backlog (slow — leave off) |
+| `DAILY_APPLY_SCORE_LIMIT` | `8` | Score at most N unscored jobs before tailor (0 = skip score) |
+| `DAILY_APPLY_SCORE` | `0` | Score the **entire** unscored backlog (slow — leave off) |
 | `DAILY_APPLY_DISCOVER` | `0` | Also run discovery (slow) |
 | `DAILY_APPLY_ATS_ONLY` / `APPLY_ATS_ONLY` | `1` | Only Greenhouse / Workday / Ashby |
 | `APPLY_SUCCESS_QUOTA` | `1` | Count only successful applies toward `-l` |
@@ -114,7 +115,7 @@ If morning applies stop, check that file and the latest `daily_apply-*.log` firs
 
 Operator runbook (health checks, LinkedIn profile vs `.env` cookie, email-outcome caveats, recent audit): [ops.md](ops.md).
 
-Daily flow: LinkedIn cookie refresh → purge weak/excluded → tailor/cover/pdf → **one** ATS apply (success quota) → Gmail outcome poll → dashboard.
+Daily flow: LinkedIn cookie refresh (re-seeds `linkedin-chrome` from `.env` if the profile is empty) → purge weak/excluded → score up to `DAILY_APPLY_SCORE_LIMIT` → tailor/cover/pdf → **one** ATS apply (success quota; skip duplicate title+employer) → Gmail outcome poll → dashboard.
 
 If LinkedIn refresh fails, run `applypilot linkedin-auth --login` once on the desktop; later dailies can `--refresh` headlessly.
 

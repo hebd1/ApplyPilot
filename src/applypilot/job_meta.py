@@ -124,13 +124,91 @@ def display_company(job: dict) -> str:
     if company:
         return company
 
+    site = (job.get("site") or "").strip()
     for key in ("application_url", "url"):
         inferred = infer_company_from_url(job.get(key))
         if inferred:
-            return inferred
+            return _prefer_site_label(inferred, site)
 
-    site = (job.get("site") or "").strip()
     return site or "Unknown"
+
+
+def _prefer_site_label(inferred: str, site: str) -> str:
+    """Prefer a human site label (Motorola Solutions) over a mashed URL slug."""
+    if not site or site.lower() in _BOARD_SITE_LABELS:
+        return inferred
+    slug = inferred.replace(" ", "").lower()
+    label = site.replace(" ", "").lower()
+    if slug == label or slug in label or label in slug:
+        return site
+    return inferred
+
+
+def persist_missing_company(conn, job: dict) -> str:
+    """Write display_company into jobs.company when the column is empty."""
+    label = display_company(job)
+    if not (job.get("company") or "").strip() and label and label.lower() != "unknown":
+        url = job.get("url")
+        if url:
+            conn.execute("UPDATE jobs SET company = ? WHERE url = ?", (label, url))
+            job["company"] = label
+    return label
+
+
+def _norm_title(title: str | None) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", (title or "").lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _norm_apply_url(url: str | None) -> str:
+    if not url or not isinstance(url, str):
+        return ""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url.split("?")[0].rstrip("/").lower()
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").rstrip("/").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return f"{host}{path}"
+
+
+def already_applied_same_role(conn, job: dict) -> bool:
+    """True when we already submitted this apply URL or the same title at the same employer."""
+    url = job.get("url") or ""
+    title_n = _norm_title(job.get("title"))
+    company = display_company(job).strip().lower()
+    apply_n = _norm_apply_url(job.get("application_url"))
+    if not title_n:
+        return False
+
+    rows = conn.execute(
+        """
+        SELECT url, title, company, site, application_url
+        FROM jobs
+        WHERE apply_status = 'applied' AND url != ?
+        """,
+        (url,),
+    ).fetchall()
+    for row in rows:
+        other = dict(row)
+        other_apply = _norm_apply_url(other.get("application_url"))
+        if apply_n and other_apply and apply_n == other_apply:
+            return True
+        other_title = _norm_title(other.get("title"))
+        other_co = display_company(other).strip().lower()
+        if (
+            title_n
+            and title_n == other_title
+            and company
+            and other_co
+            and company == other_co
+            and company not in _BOARD_SITE_LABELS
+            and company != "unknown"
+        ):
+            return True
+    return False
 
 
 def is_board_site_label(site: str | None) -> bool:

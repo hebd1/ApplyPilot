@@ -26,7 +26,7 @@ from applypilot import config
 from applypilot.database import get_connection
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.materials import resolve_resume_text
-from applypilot.job_meta import display_company
+from applypilot.job_meta import already_applied_same_role, display_company, persist_missing_company
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit,
@@ -318,16 +318,30 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                     # Ignore transient network errors; the apply agent will retry.
                     pass
 
+            job = dict(row)
+            persist_missing_company(conn, job)
+            if not target_url and already_applied_same_role(conn, job):
+                conn.execute(
+                    "UPDATE jobs SET apply_status = 'failed', apply_error = ?, "
+                    "apply_attempts = 99 WHERE url = ?",
+                    ("duplicate_applied", job["url"]),
+                )
+                conn.commit()
+                logger.info(
+                    "Skipping duplicate of an already-applied role: %s @ %s",
+                    (job.get("title") or "")[:60],
+                    display_company(job),
+                )
+                continue
+
             now = datetime.now(timezone.utc).isoformat()
             conn.execute("""
                 UPDATE jobs SET apply_status = 'in_progress',
                                agent_id = ?,
                                last_attempted_at = ?
                 WHERE url = ?
-            """, (f"worker-{worker_id}", now, row["url"]))
+            """, (f"worker-{worker_id}", now, job["url"]))
             conn.commit()
-
-            job = dict(row)
             return job
 
         return None

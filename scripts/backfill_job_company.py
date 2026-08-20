@@ -13,7 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from applypilot.database import ensure_columns, get_connection
-from applypilot.job_meta import classify_apply_url, display_company, infer_company_from_url
+from applypilot.job_meta import classify_apply_url, display_company
 
 
 def backfill_companies(conn: sqlite3.Connection) -> int:
@@ -24,14 +24,10 @@ def backfill_companies(conn: sqlite3.Connection) -> int:
     for url, site, company, app_url in rows:
         if company and str(company).strip():
             continue
-        inferred = infer_company_from_url(app_url) or infer_company_from_url(url)
-        # Workday already stores employer in site — promote when site isn't a board.
-        if not inferred and site and site.lower() not in {
-            "indeed", "linkedin", "talent.com", "ziprecruiter", "glassdoor",
-            "simplyhired", "dice", "google",
-        }:
-            inferred = site
-        if inferred:
+        inferred = display_company(
+            {"url": url, "site": site, "company": company, "application_url": app_url}
+        )
+        if inferred and inferred.lower() != "unknown":
             conn.execute("UPDATE jobs SET company = ? WHERE url = ?", (inferred, url))
             updated += 1
     conn.commit()
@@ -81,6 +77,21 @@ def main() -> None:
         print(f"Migrated columns: {added}")
     n = backfill_companies(conn)
     print(f"Backfilled company on {n} jobs")
+    # Un-mash URL slugs when site is the same employer with nicer spacing/case.
+    fixed = conn.execute(
+        """
+        UPDATE jobs SET company = site
+        WHERE company IS NOT NULL AND site IS NOT NULL
+          AND company != site
+          AND LOWER(REPLACE(company, ' ', '')) = LOWER(REPLACE(site, ' ', ''))
+          AND LOWER(site) NOT IN (
+            'indeed','linkedin','talent.com','ziprecruiter','glassdoor',
+            'simplyhired','dice','google'
+          )
+        """
+    ).rowcount
+    conn.commit()
+    print(f"Normalized mashed company slugs to site label: {fixed}")
 
     sample = conn.execute(
         "SELECT title, site, company, application_url FROM jobs "

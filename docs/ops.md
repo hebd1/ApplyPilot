@@ -30,9 +30,9 @@ Healthy `apply_health.json` looks like:
 1. Shared flock on `~/.applypilot/logs/daily_apply.lock` (Windows Task and WSL cron must share this path — `XDG_RUNTIME_DIR` differs and used to start two copies, locking SQLite).
 2. Purge unapplyable / excluded / stuck `in_progress` rows.
 3. Gmail readonly preflight (`gmail_mcp_token_healthy`). **Hard stop** if the refresh token is dead (`DAILY_APPLY_REQUIRE_GMAIL=1`).
-4. LinkedIn `--refresh` from `linkedin-chrome` profile. **Warning only** if the profile is logged out (`DAILY_APPLY_REQUIRE_LINKEDIN=0`).
-5. `tailor cover pdf` for score ≥ 7 jobs that already have a usable ATS `application_url`. Does **not** score the unscored backlog (`DAILY_APPLY_SCORE=0`).
-6. `apply --headless -l 1 --min-score 8` (Greenhouse / Workday / Ashby only, success quota 1).
+4. LinkedIn `--refresh` from `linkedin-chrome`. If the profile is empty but `.env` `LINKEDIN_LI_AT` still validates, re-seed the profile from that cookie (enrich keeps working). Interactive `--login` is still the durable fix.
+5. Score at most `DAILY_APPLY_SCORE_LIMIT` (default **8**) unscored jobs, then `tailor cover pdf` for score ≥ 7 with a usable ATS `application_url`. Set `DAILY_APPLY_SCORE=1` only when you want the entire backlog.
+6. `apply --headless -l 1 --min-score 8` (Greenhouse / Workday / Ashby only, success quota 1). Skips a job if the same apply URL or same title+employer is already `applied`.
 7. `poll_application_emails.py` (readonly outcome tags).
 8. Regenerate the HTML dashboard.
 
@@ -44,7 +44,7 @@ Env vars are documented in [auto-apply.md](auto-apply.md).
 |---------|------------|-----|
 | Morning log stops at Gmail preflight; `invalid_grant` | Refresh token expired or revoked | `bash scripts/gmail_oauth_readonly.sh` then `applypilot doctor` |
 | Dashboard looks idle, no new `applied` rows | Same as above, or lock race (fixed: use `logs/daily_apply.lock`) | `applypilot status`; latest `daily_apply-*.log` |
-| `Profile has no LinkedIn session` | `linkedin-chrome` profile logged out. `.env` `LINKEDIN_LI_AT` can still be OK | `applypilot linkedin-auth --login` on the desktop |
+| `Profile has no LinkedIn session` | `linkedin-chrome` empty **and** `.env` cookie missing/invalid | `--refresh` now re-seeds from a valid `.env` cookie; `--login` if both are dead |
 | High-fit LinkedIn jobs with no resume | Tailor skips listings without an ATS `application_url` | Restore LinkedIn profile session so enrich can resolve company-site apply URLs |
 | Applied card shows the wrong outcome | Email poller matched ATS From: to `site=Workday` / `site=Greenhouse` | Matcher now requires a real employer name or title phrase; clear the bad `outcome` if needed |
 | `database is locked` at 08:00 | Windows Task + cron both started | Shared lock file; first copy wins, second should skip |
@@ -134,16 +134,17 @@ Taken after Gmail re-auth and a catch-up apply the same morning.
 - Gmail refresh token revoked (`invalid_grant`). Preflight exited; ~84 jobs stayed ready. Not a scheduler outage.
 - 2026-08-13/14 first process often hit `database is locked` (Task + cron). The second process usually completed the apply. Lock file is now `~/.applypilot/logs/daily_apply.lock`.
 
-**Open issues / improvements**
+**Open issues / follow-ups**
 
-1. **LinkedIn Chrome profile logged out.** `linkedin-auth --refresh` warns every morning. `.env` `li_at` still checks OK. High-fit LinkedIn cards (~34) have no `application_url` / no tailored resume until the profile is logged in again.
-2. **Email matcher false rejection (fixed in code).** The 09:34 ML Ops apply was tagged `rejected` from a Nelnet *Sr Staff Engineer* Workday email (`From: myworkday.com` + `site=Workday`). Matcher no longer uses From: for employer identity. Clear the bad outcome on that row if it is still set.
-3. **`company` is NULL on 11/23 applied rows** (Workday / NVIDIA / Motorola site-discovered jobs). Dashboard and poller fall back to `site` / URL inference. `scripts/backfill_job_company.py` promotes `site` when it is not a job board — that is correct for NVIDIA, misleading when `site=Workday` the product vs Workday the employer.
-4. **OTP mail was stored as `confirmed`** on LeafLink / Sagent (security-code emails). Poller now skips OTP subjects.
-5. **Unscored backlog ~218** with full descriptions. Daily apply does not score them (intentional — scoring would block the 08:00 apply for hours). Run `DAILY_APPLY_SCORE=1` only when you mean to.
-6. **solo.io outcome `interview`** may be a soft “we’ve got your application / next steps” match. Treat interview badges as hints, not calendar facts.
-7. **Two Mozilla “Senior Software Engineer” applies** (2026-07-28) — duplicate listings, same title.
-8. **CapSolver balance** is finite; doctor reports it. Replenish before it hits $0 or CAPTCHA jobs fail closed.
+1. **LinkedIn Chrome profile still needs a desktop `--login` for a durable session.** `--refresh` now re-seeds from a valid `.env` cookie so morning apply no longer treats that as a hard miss. High-fit LinkedIn cards without an ATS URL still need a live session (or re-enrich) before they can be tailored.
+2. **CapSolver balance** is finite; doctor reports it. Replenish before it hits $0 or CAPTCHA jobs fail closed.
+
+**Fixes landed after this snapshot**
+
+- Email matcher: no From:-as-employer; OTP ignored; interview regex tightened (`we've got your application` → confirmed).
+- `company` persisted via `display_company` on acquire + `backfill_job_company.py`.
+- Daily apply scores at most 8 unscored jobs (`DAILY_APPLY_SCORE_LIMIT`).
+- Stage 6 skips `duplicate_applied` (same apply URL or same title + employer already applied).
 
 **Queue (same day)**
 

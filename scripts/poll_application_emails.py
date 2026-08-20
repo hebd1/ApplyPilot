@@ -37,8 +37,8 @@ OUTCOME_PRIORITY = {
 }
 
 INTERVIEW_RE = re.compile(
-    r"\b(interview|schedule a call|phone screen|next steps|speak with you|"
-    r"availability for|meet with the team)\b",
+    r"\b(interview|phone screen|phone-screen|schedule (an )?interview|"
+    r"invite(d)? you to interview|onsite interview|on-site interview)\b",
     re.I,
 )
 REJECT_RE = re.compile(
@@ -49,7 +49,7 @@ REJECT_RE = re.compile(
 CONFIRM_RE = re.compile(
     r"\b(thank you for (your )?apply|application (has been )?received|"
     r"we received your application|application was submitted|"
-    r"thanks for applying)\b",
+    r"thanks for applying|we('ve| have) got your application)\b",
     re.I,
 )
 OFFER_RE = re.compile(r"\b(offer of employment|job offer|pleased to offer)\b", re.I)
@@ -424,6 +424,20 @@ def _self_test() -> None:
         "noreply@sagent.com",
     )
     assert classify_email(*otp_mail) == "unknown"
+
+    solo_mail = (
+        "Solo.io - we've got your application!",
+        "Hi Eli, We're glad you're interested in joining",
+        "careers@solo.io",
+    )
+    assert classify_email(*solo_mail) == "confirmed"
+
+    interview_mail = (
+        "Interview invitation",
+        "We would like to invite you to interview for the role",
+        "recruiting@example.com",
+    )
+    assert classify_email(*interview_mail) == "interview"
     print("poll_application_emails self-test: ok")
 
 

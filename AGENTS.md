@@ -275,6 +275,7 @@ Package is installed editable: `pip install -e .` (from WSL).
 # See docs/auto-apply.md
 
 # Daily scheduled apply (08:00 Mountain — 1 quality ATS apply + Gmail outcome poll)
+# Scores at most DAILY_APPLY_SCORE_LIMIT (default 8) before tailor/cover/pdf.
 powershell -ExecutionPolicy Bypass -File scripts/install_daily_apply_windows_task.ps1
 bash scripts/install_daily_apply_cron.sh
 bash scripts/daily_apply.sh
