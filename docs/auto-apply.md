@@ -112,6 +112,8 @@ Daily apply writes `~/.applypilot/apply_health.json` so `applypilot status` and 
 
 If morning applies stop, check that file and the latest `daily_apply-*.log` first. A Gmail `invalid_grant` / “Token has been expired or revoked” error means re-run `bash scripts/gmail_oauth_readonly.sh` on the desktop (browser consent), then `applypilot doctor` and either wait for 08:00 or run `bash scripts/daily_apply.sh`.
 
+Operator runbook (health checks, LinkedIn profile vs `.env` cookie, email-outcome caveats, recent audit): [ops.md](ops.md).
+
 Daily flow: LinkedIn cookie refresh → purge weak/excluded → tailor/cover/pdf → **one** ATS apply (success quota) → Gmail outcome poll → dashboard.
 
 If LinkedIn refresh fails, run `applypilot linkedin-auth --login` once on the desktop; later dailies can `--refresh` headlessly.
@@ -194,6 +196,8 @@ After jobs are marked `applied`, a separate **read-only** poller matches inbox m
 ```
 
 Writes `outcome` / `outcome_snippet` / `outcome_message_id` on `jobs` (`confirmed`, `rejected`, `interview`, `offer`). Uses the same `~/.gmail-mcp/` tokens as OTP — **never** send/mutate. Dashboard Applied cards show outcome badges. Daily apply runs this poll automatically (`DAILY_APPLY_EMAIL_POLL=1`).
+
+Matching rules (see [ops.md](ops.md)): ignore OTP / security-code mail; match employer names in subject/snippet only (not `From: myworkday.com`); require a real company mention or a distinctive title phrase. `python scripts/poll_application_emails.py --self-test` checks the Workday-ATS false-positive case.
 
 ### Gmail MCP safety (read-only by default)
 

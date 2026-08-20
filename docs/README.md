@@ -12,6 +12,8 @@
 
 | [auto-apply.md](auto-apply.md) | Developers / users | Stage 6 Cursor apply, Gmail OTP (read-only; send/mutate only with consent), dry-run |
 
+| [ops.md](ops.md) | Operators | Daily apply runbook, health checks, email-outcome caveats, 2026-08-20 audit |
+
 | [discovery.md](discovery.md) | Developers / users | Job discovery, exclude_titles, marketplace hosts, Greenhouse-first ATS strategy |
 
 | [development.md](development.md) | Developers | WSL setup, editable install, Playwright, scripts, debugging |

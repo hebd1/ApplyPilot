@@ -88,6 +88,8 @@ LinkedIn discovery is enabled in `searches.example.yaml`. Enrich parses LinkedIn
 
 `scripts/daily_apply.sh` runs `--refresh` automatically each morning (`DAILY_APPLY_LINKEDIN_REFRESH=1`).
 
+`--refresh` reads the persistent `~/.applypilot/linkedin-chrome/` profile. Doctor `--check` can still be green on `LINKEDIN_LI_AT` in `.env` while the profile is logged out — in that case morning refresh warns and LinkedIn listings often keep a missing `application_url` (no tailor/apply). Re-login with `--login` when that happens.
+
 Or set `LINKEDIN_LI_AT` in `~/.applypilot/.env`. Easy Apply-only jobs stay manual.
 
 ## Source strategy (bot detection vs automation)

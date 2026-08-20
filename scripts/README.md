@@ -94,8 +94,8 @@ See [docs/resume-tailoring.md](../docs/resume-tailoring.md).
 | `reset_for_fresh_start.sh` | Delete all jobs, materials, dashboard; optional config wipe |
 | `gmail_oauth_readonly.sh` | Gmail MCP OAuth with **`gmail.readonly` only** (avoid stock MCP `auth`, which requests modify/settings) |
 | `purge_unapplyable_queue.py` | Demote excluded titles; mark LinkedIn/weak apply URLs failed; clear stuck in_progress |
-| `poll_application_emails.py` | Gmail readonly: match inbox to applied jobs → outcome fields |
-| `daily_apply.sh` | Daily prep + **1** quality ATS apply + email poll |
+| `poll_application_emails.py` | Gmail readonly: match inbox to applied jobs → outcome fields (`--self-test` for matcher checks) |
+| `daily_apply.sh` | Daily prep + **1** quality ATS apply + email poll; writes `~/.applypilot/apply_health.json` |
 | `run_daily_apply.cmd` | Windows Task Scheduler wrapper → WSL daily_apply.sh |
 | `install_daily_apply_cron.sh` | Install 08:00 America/Denver crontab entry (backup) |
 | `install_daily_apply_windows_task.ps1` | Install 08:00 Windows Task (primary schedule) |

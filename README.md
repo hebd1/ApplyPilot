@@ -66,7 +66,7 @@ Always run via the editable install so you do not hit an older PATH binary:
 .venv/bin/applypilot apply --headless -l 1  # real submit, one job
 ```
 
-See [docs/cursor-llm.md](docs/cursor-llm.md), [docs/auto-apply.md](docs/auto-apply.md), and [AGENTS.md](AGENTS.md).
+See [docs/cursor-llm.md](docs/cursor-llm.md), [docs/auto-apply.md](docs/auto-apply.md), [docs/ops.md](docs/ops.md), and [AGENTS.md](AGENTS.md).
 
 ### PDF output and dashboard (this checkout)
 
