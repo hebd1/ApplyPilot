@@ -13,15 +13,17 @@ This checkout applies **one** high-quality ATS job each weekday morning (08:00 A
 | Morning transcript | `~/.applypilot/logs/daily_apply-YYYYMMDD-*.log` |
 | Windows task | `schtasks /Query /TN "ApplyPilot Daily Apply" /V /FO LIST` |
 
-Healthy `apply_health.json` looks like:
+Healthy `apply_health.json` after a submit:
 
 ```json
 {
   "status": "ok",
   "reason": "applied",
-  "detail": "Daily apply finished"
+  "detail": "Submitted 1 application(s)"
 }
 ```
+
+`reason: queue_empty` means the 08:00 job ran (Gmail/LinkedIn preflight passed) but Stage 6 submitted **0** applications. ApplyPilot does not send its own “you applied” email — company confirmation only arrives after a real submit.
 
 `status: blocked` + `reason: gmail_auth_required` means the 08:00 job exited **before** submitting. Re-auth, then run doctor and `bash scripts/daily_apply.sh`.
 
@@ -48,6 +50,9 @@ Env vars are documented in [auto-apply.md](auto-apply.md).
 | High-fit LinkedIn jobs with no resume | Tailor skips listings without an ATS `application_url` | Restore LinkedIn profile session so enrich can resolve company-site apply URLs |
 | Applied card shows the wrong outcome | Email poller matched ATS From: to `site=Workday` / `site=Greenhouse` | Matcher now requires a real employer name or title phrase; clear the bad `outcome` if needed |
 | `database is locked` at 08:00 | Windows Task + cron both started | Shared lock file; first copy wins, second should skip |
+| Health says `applied` but no company email / no new DB row | Used to treat any apply exit 0 as a submit (including empty queue) | Health now records `queue_empty` when `Done: 0 applied` |
+| `Queue empty` while dashboard still shows ATS-ready jobs | Stage 6 SQL bound blocked-site names into ATS `LIKE` slots | Fixed in `build_apply_queue_query`; `scripts/test_apply_queue.py` guards it |
+| Email poll `HTTP 401` after a long morning run | Stale Gmail access token (~1h) after score/tailor | Poller refreshes and retries once on 401 |
 
 ## Gmail vs LinkedIn (two different sessions)
 

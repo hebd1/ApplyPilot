@@ -84,83 +84,46 @@ def _make_mcp_config(cdp_port: int) -> dict:
 # Database operations
 # ---------------------------------------------------------------------------
 
-def acquire_job(target_url: str | None = None, min_score: int = 7,
-                worker_id: int = 0, *, ats_only: bool | None = None) -> dict | None:
-    """Atomically acquire the next job to apply to.
+def build_apply_queue_query(min_score: int, *, ats_only: bool) -> tuple[str, list]:
+    """Build the Stage 6 candidate SELECT and bound parameters.
 
-    Args:
-        target_url: Apply to a specific URL instead of picking from queue.
-        min_score: Minimum fit_score threshold.
-        worker_id: Worker claiming this job (for tracking).
-        ats_only: If True, only Greenhouse / Workday / Ashby. Defaults from
-            env ``APPLY_ATS_ONLY`` / ``DAILY_APPLY_ATS_ONLY`` (1/true).
-
-    Returns:
-        Job dict or None if the queue is empty.
+    Placeholder order must match ``params``: max_attempts, min_score, ATS
+    hosts, blocked site names, then blocked URL patterns. Mixing that order
+    binds blocked names into ``application_url LIKE ?`` and the queue looks
+    empty even when Greenhouse/Workday/Ashby jobs are ready.
     """
-    from applypilot.config import (
-        is_manual_ats,
-        is_marketplace_url,
-        is_skip_apply_url,
-        load_preferred_ats_hosts,
-        title_is_excluded,
-    )
-    from applypilot.job_meta import classify_apply_url, is_preferred_ats_url
+    from applypilot.config import load_preferred_ats_hosts
 
-    if ats_only is None:
-        ats_only = os.environ.get("APPLY_ATS_ONLY", os.environ.get("DAILY_APPLY_ATS_ONLY", "")).strip().lower() in (
-            "1", "true", "yes",
+    blocked_sites, blocked_patterns = _load_blocked()
+    params: list = [config.DEFAULTS["max_apply_attempts"], min_score]
+
+    ats_clause = ""
+    if ats_only:
+        hosts = load_preferred_ats_hosts() or [
+            "greenhouse.io", "grnh.se", "myworkdayjobs.com", "ashbyhq.com",
+        ]
+        ats_parts = " OR ".join(
+            "LOWER(IFNULL(application_url, '')) LIKE ?" for _ in hosts
         )
+        ats_clause = f"AND ({ats_parts})"
+        params.extend([f"%{h}%" for h in hosts])
 
-    conn = get_connection()
-    try:
-        # Skip loop: weak/manual URLs are marked and we try the next candidate.
-        for _ in range(100):
-            conn.execute("BEGIN IMMEDIATE")
+    site_clause = ""
+    if blocked_sites:
+        placeholders = ",".join("?" * len(blocked_sites))
+        site_clause = f"AND site NOT IN ({placeholders})"
+        params.extend(blocked_sites)
 
-            if target_url:
-                like = f"%{target_url.split('?')[0].rstrip('/')}%"
-                row = conn.execute("""
-                    SELECT url, title, site, company, application_url, tailored_resume_path,
-                           fit_score, location, full_description, cover_letter_path
-                    FROM jobs
-                    WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
-                      AND tailored_resume_path IS NOT NULL
-                      AND (apply_status IS NULL OR apply_status != 'in_progress')
-                    LIMIT 1
-                """, (target_url, target_url, like, like)).fetchone()
-            else:
-                blocked_sites, blocked_patterns = _load_blocked()
-                params: list = [min_score]
-                site_clause = ""
-                if blocked_sites:
-                    placeholders = ",".join("?" * len(blocked_sites))
-                    site_clause = f"AND site NOT IN ({placeholders})"
-                    params.extend(blocked_sites)
-                url_clauses = ""
-                if blocked_patterns:
-                    # Apply blocked patterns to board URL and career/apply URL.
-                    url_clauses = " ".join(
-                        "AND url NOT LIKE ? AND IFNULL(application_url, '') NOT LIKE ?"
-                        for _ in blocked_patterns
-                    )
-                    for pattern in blocked_patterns:
-                        params.extend([pattern, pattern])
+    url_clauses = ""
+    if blocked_patterns:
+        url_clauses = " ".join(
+            "AND url NOT LIKE ? AND IFNULL(application_url, '') NOT LIKE ?"
+            for _ in blocked_patterns
+        )
+        for pattern in blocked_patterns:
+            params.extend([pattern, pattern])
 
-                ats_clause = ""
-                if ats_only:
-                    hosts = load_preferred_ats_hosts() or [
-                        "greenhouse.io", "grnh.se", "myworkdayjobs.com", "ashbyhq.com",
-                    ]
-                    ats_parts = " OR ".join(
-                        "LOWER(IFNULL(application_url, '')) LIKE ?" for _ in hosts
-                    )
-                    ats_clause = f"AND ({ats_parts})"
-                    params.extend([f"%{h}%" for h in hosts])
-
-                # Prefer Greenhouse / Workday / Ashby; Lever is skip_apply_hosts for now.
-                # Skip board hosts in SQL so we do not burn the skip-loop on LinkedIn noise.
-                row = conn.execute(f"""
+    sql = f"""
                     SELECT url, title, site, company, application_url, tailored_resume_path,
                            fit_score, location, full_description, cover_letter_path
                     FROM jobs
@@ -190,10 +153,69 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                       END,
                       fit_score DESC, url
                     LIMIT 1
-                """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
+                """
+    return sql, params
+
+
+def acquire_job(target_url: str | None = None, min_score: int = 7,
+                worker_id: int = 0, *, ats_only: bool | None = None) -> dict | None:
+    """Atomically acquire the next job to apply to.
+
+    Args:
+        target_url: Apply to a specific URL instead of picking from queue.
+        min_score: Minimum fit_score threshold.
+        worker_id: Worker claiming this job (for tracking).
+        ats_only: If True, only Greenhouse / Workday / Ashby. Defaults from
+            env ``APPLY_ATS_ONLY`` / ``DAILY_APPLY_ATS_ONLY`` (1/true).
+
+    Returns:
+        Job dict or None if the queue is empty.
+    """
+    from applypilot.config import (
+        is_manual_ats,
+        is_marketplace_url,
+        is_skip_apply_url,
+        title_is_excluded,
+    )
+    from applypilot.job_meta import classify_apply_url, is_preferred_ats_url
+
+    if ats_only is None:
+        ats_only = os.environ.get("APPLY_ATS_ONLY", os.environ.get("DAILY_APPLY_ATS_ONLY", "")).strip().lower() in (
+            "1", "true", "yes",
+        )
+
+    conn = get_connection()
+    try:
+        # Skip loop: weak/manual URLs are marked and we try the next candidate.
+        for _ in range(100):
+            conn.execute("BEGIN IMMEDIATE")
+
+            if target_url:
+                like = f"%{target_url.split('?')[0].rstrip('/')}%"
+                row = conn.execute("""
+                    SELECT url, title, site, company, application_url, tailored_resume_path,
+                           fit_score, location, full_description, cover_letter_path
+                    FROM jobs
+                    WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
+                      AND tailored_resume_path IS NOT NULL
+                      AND (apply_status IS NULL OR apply_status != 'in_progress')
+                    LIMIT 1
+                """, (target_url, target_url, like, like)).fetchone()
+            else:
+                # Prefer Greenhouse / Workday / Ashby; Lever is skip_apply_hosts for now.
+                # Skip board hosts in SQL so we do not burn the skip-loop on LinkedIn noise.
+                queue_sql, queue_params = build_apply_queue_query(
+                    min_score, ats_only=ats_only,
+                )
+                row = conn.execute(queue_sql, queue_params).fetchone()
 
             if not row:
                 conn.rollback()
+                if not target_url:
+                    logger.info(
+                        "Apply queue empty after filters (min_score=%s ats_only=%s)",
+                        min_score, ats_only,
+                    )
                 return None
 
             if title_is_excluded(row["title"]):

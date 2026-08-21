@@ -120,12 +120,24 @@ PY
   fi
 
   echo "==> apply --headless -l $LIMIT (min-score $MIN_SCORE, success quota)"
-  if "$REPO/.venv/bin/applypilot" apply --headless -l "$LIMIT" -w 1 --min-score "$MIN_SCORE"; then
-    write_health ok applied "Daily apply finished"
-  else
-    apply_rc=$?
+  apply_out="$LOG_DIR/apply-last.txt"
+  apply_rc=0
+  "$REPO/.venv/bin/applypilot" apply --headless -l "$LIMIT" -w 1 --min-score "$MIN_SCORE" | tee "$apply_out" || apply_rc=$?
+  if [[ "$apply_rc" -ne 0 ]]; then
     write_health error apply_failed "applypilot apply exited $apply_rc"
     exit "$apply_rc"
+  fi
+  applied_n="$("$REPO/.venv/bin/python" -c '
+import re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+hits = re.findall(r"Done: (\d+) applied", text)
+print(hits[-1] if hits else "0")
+' "$apply_out")"
+  if [[ "${applied_n:-0}" -gt 0 ]]; then
+    write_health ok applied "Submitted ${applied_n} application(s)"
+  else
+    write_health ok queue_empty "Apply finished with 0 submissions (queue empty or all candidates skipped)"
   fi
 
   if [[ "${DAILY_APPLY_EMAIL_POLL:-1}" == "1" ]]; then

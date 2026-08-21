@@ -96,6 +96,7 @@ See [docs/resume-tailoring.md](../docs/resume-tailoring.md).
 | `purge_unapplyable_queue.py` | Demote excluded titles; mark LinkedIn/weak apply URLs failed; clear stuck in_progress |
 | `poll_application_emails.py` | Gmail readonly: match inbox to applied jobs → outcome fields (`--self-test` for matcher checks) |
 | `test_apply_duplicates.py` | Unit check: persist company + skip already-applied title/employer |
+| `test_apply_queue.py` | Unit check: Stage 6 queue SQL binds ATS hosts before blocked-site params |
 | `daily_apply.sh` | Daily prep + **1** quality ATS apply + email poll; writes `~/.applypilot/apply_health.json` |
 | `run_daily_apply.cmd` | Windows Task Scheduler wrapper → WSL daily_apply.sh |
 | `install_daily_apply_cron.sh` | Install 08:00 America/Denver crontab entry (backup) |

@@ -320,9 +320,11 @@ def status() -> None:
             f"{health.get('detail') or health.get('updated_at') or ''}"
         )
     elif health:
+        reason = health.get("reason") or "ok"
+        style = "yellow" if reason == "queue_empty" else "green"
         console.print(
-            f"  Daily apply health: [green]{health.get('status', 'ok')}[/green]  "
-            f"[dim]{health.get('updated_at', '')}[/dim]"
+            f"  Daily apply health: [{style}]{health.get('status', 'ok')}[/{style}] "
+            f"[dim]{reason} {health.get('updated_at', '')}[/dim]"
         )
 
     # Score distribution

@@ -150,7 +150,7 @@ def _access_token(token: dict) -> str:
     return str(token["access_token"])
 
 
-def _gmail_get(path: str, token: dict, params: dict | None = None) -> dict:
+def _gmail_get(path: str, token: dict, params: dict | None = None, *, _retried: bool = False) -> dict:
     access = _access_token(token)
     qs = ""
     if params:
@@ -162,6 +162,11 @@ def _gmail_get(path: str, token: dict, params: dict | None = None) -> dict:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:300]
+        # Access tokens expire ~1h; a long score/tailor/apply run can leave a stale one.
+        if e.code == 401 and not _retried and token.get("refresh_token"):
+            token["access_token"] = ""
+            token["expiry_date"] = 0
+            return _gmail_get(path, token, params, _retried=True)
         raise SystemExit(f"Gmail API HTTP {e.code}: {detail}") from e
 
 
