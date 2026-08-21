@@ -49,6 +49,82 @@ def gmail_mcp_authenticated() -> bool:
     return gmail_mcp_credentials_path().is_file()
 
 
+def gmail_mcp_token_healthy() -> tuple[bool, str]:
+    """Refresh the Gmail MCP token and report whether Stage 6 can read mail.
+
+    Returns:
+        (ok, detail) — ok is False on missing/revoked tokens (invalid_grant).
+    """
+    import json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from datetime import datetime, timedelta, timezone
+
+    creds_path = gmail_mcp_credentials_path()
+    keys_path = Path.home() / ".gmail-mcp" / "gcp-oauth.keys.json"
+    if not creds_path.is_file():
+        return False, f"missing {creds_path}"
+    if not keys_path.is_file():
+        return False, f"missing {keys_path}"
+
+    try:
+        token = json.loads(creds_path.read_text(encoding="utf-8"))
+        keys = json.loads(keys_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"unreadable Gmail OAuth files: {exc}"
+
+    installed = keys.get("installed") or keys.get("web") or {}
+    client_id = installed.get("client_id")
+    client_secret = installed.get("client_secret")
+    token_uri = installed.get("token_uri") or "https://oauth2.googleapis.com/token"
+    refresh = token.get("refresh_token")
+    if not client_id or not client_secret:
+        return False, "invalid gcp-oauth.keys.json"
+    if not refresh:
+        return False, "no refresh_token — re-run bash scripts/gmail_oauth_readonly.sh"
+
+    body = urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh,
+            "grant_type": "refresh_token",
+        }
+    ).encode()
+    req = urllib.request.Request(
+        token_uri,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        if exc.code == 400 and "invalid_grant" in detail:
+            return False, "refresh failed HTTP 400: invalid_grant (token expired or revoked)"
+        return False, f"refresh failed HTTP {exc.code}: {detail}"
+    except Exception as exc:
+        return False, f"refresh failed: {exc}"
+
+    access = data.get("access_token")
+    if not access:
+        return False, "refresh returned no access_token"
+    token["access_token"] = access
+    if "expires_in" in data:
+        exp = datetime.now(timezone.utc) + timedelta(seconds=int(data["expires_in"]))
+        token["expiry_date"] = int(exp.timestamp() * 1000)
+    if data.get("refresh_token"):
+        token["refresh_token"] = data["refresh_token"]
+    try:
+        creds_path.write_text(json.dumps(token, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return False, f"could not write refreshed token: {exc}"
+    return True, "gmail.readonly refresh OK"
+
+
 def gmail_send_allowed() -> bool:
     """True only when the user explicitly opts in to outbound Gmail send.
 
