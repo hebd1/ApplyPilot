@@ -76,7 +76,21 @@ There is no global “search all Greenhouse” API without a company board list.
 
 `preferred_ats_hosts` in `sites.yaml` documents the host list (Lever omitted while skipped).
 
-Indeed posts are still useful **only when enrich finds** a real ATS `application_url`. Board-only LinkedIn/Indeed apply targets remain `weak_apply_url`.
+Indeed / LinkedIn posts are useful **when enrich resolves** a real ATS `application_url` (company-website apply). Board-only or Easy Apply destinations remain `weak_apply_url` / manual.
+
+LinkedIn discovery is enabled in `searches.example.yaml`. Enrich parses LinkedIn's embedded `applyUrl` (when present) and follows redirects to Greenhouse/Workday/Ashby. Public LinkedIn pages hide that target behind a sign-in wall. Capture a session with:
+
+```bash
+.venv/bin/applypilot linkedin-auth --login     # one-time browser sign-in
+.venv/bin/applypilot linkedin-auth --refresh   # pull rotated li_at from profile
+.venv/bin/applypilot linkedin-auth --check     # validate current cookie
+```
+
+`scripts/daily_apply.sh` runs `--refresh` automatically each morning (`DAILY_APPLY_LINKEDIN_REFRESH=1`).
+
+`--refresh` reads the persistent `~/.applypilot/linkedin-chrome/` profile. Doctor `--check` can still be green on `LINKEDIN_LI_AT` in `.env` while the profile is logged out — in that case morning refresh warns and LinkedIn listings often keep a missing `application_url` (no tailor/apply). Re-login with `--login` when that happens.
+
+Or set `LINKEDIN_LI_AT` in `~/.applypilot/.env`. Easy Apply-only jobs stay manual.
 
 ## Source strategy (bot detection vs automation)
 
@@ -87,9 +101,11 @@ Indeed posts are still useful **only when enrich finds** a real ATS `application
 | Greenhouse / Workday boards | Discovery + apply | Best Stage 6 success so far |
 | Ashby | Discovery + apply | Secondary preferred ATS |
 | Lever | Discover only (skip apply) | hCaptcha unsupported by CapSolver — `skip_apply_hosts` |
+| LinkedIn | Discovery + apply resolve | Best match quality; needs `linkedin-auth` / `LINKEDIN_LI_AT` for off-site ATS URLs. Easy Apply = manual |
+
+
 | Indeed (JobSpy) | Discovery volume | Needs enrich + marketplace denylist |
 | ZipRecruiter | Discovery | Same pattern as Indeed |
-| LinkedIn | Deprioritized | Bot detection + weak apply URLs (omit from `sites` by default) |
 | iCIMS + Auth0/SSO | Avoid preferring | Login walls → `LOGIN_ISSUE` |
 
 Stage 6 still uses CapSolver for CAPTCHAs and **read-only** Gmail OTP. Never send/update/delete Gmail or change settings without explicit consent — see [auto-apply.md](auto-apply.md).

@@ -126,6 +126,10 @@ Runtime state is under `~/.applypilot/` (WSL: `/home/<user>/.applypilot/`):
 
 | `dashboard.html` | Generated job review UI |
 
+| `apply_health.json` | Last daily-apply result (`ok` / `blocked`) for status + dashboard |
+
+| `logs/daily_apply-*.log` | Morning apply transcript |
+
 
 
 Also outside the repo: `~/.gmail-mcp/` (`gcp-oauth.keys.json`, `credentials.json`) for Stage 6 OTP read. Never commit those files. Reset scripts do **not** touch Gmail tokens.
@@ -271,6 +275,7 @@ Package is installed editable: `pip install -e .` (from WSL).
 # See docs/auto-apply.md
 
 # Daily scheduled apply (08:00 Mountain — 1 quality ATS apply + Gmail outcome poll)
+# Scores at most DAILY_APPLY_SCORE_LIMIT (default 8) before tailor/cover/pdf.
 powershell -ExecutionPolicy Bypass -File scripts/install_daily_apply_windows_task.ps1
 bash scripts/install_daily_apply_cron.sh
 bash scripts/daily_apply.sh
@@ -514,6 +519,8 @@ PDF generation via Playwright adds ~2–4s per document after Playwright deps ar
 ## Further reading
 
 
+
+- [docs/ops.md](docs/ops.md) — Daily apply runbook, health checks, recent ops notes
 
 - [docs/auto-apply.md](docs/auto-apply.md) — Stage 6 Cursor apply; Gmail read-only OTP; never send/update/delete/settings without consent
 

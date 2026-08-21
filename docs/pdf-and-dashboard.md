@@ -79,7 +79,7 @@ Generates `~/.applypilot/dashboard.html` with clickable top modules:
 
 | Module | Contents |
 |--------|----------|
-| **Overview** | Pipeline counts, score distribution, source breakdown |
+| **Overview** | Pipeline counts, score distribution, source breakdown; red banner when daily apply is blocked (expired Gmail token, etc.) |
 | **Jobs** | Scored listings (5+), filterable by score / search |
 | **Applied** | Submitted applications with status, timestamps, JD, materials |
 | **Failed** | Failed / skipped apply attempts (CAPTCHA, location, host skips, etc.) |
@@ -94,7 +94,7 @@ Job cards show fit score, reasoning, expandable full description, and action lin
 | **Resume (PDF)** | Tailored resume PDF |
 | **Cover Letter (PDF)** | Cover letter PDF |
 
-Applied cards also surface `apply_status`, `applied_at`, and any `apply_error` note.
+Applied cards also surface `apply_status`, `applied_at`, any `apply_error` note, and Gmail outcome badges (`confirmed` / `rejected` / `interview` / `offer`). Treat those badges as hints — see [ops.md](ops.md) for matcher limits.
 
 Implementation: [`src/applypilot/view.py`](../src/applypilot/view.py)
 

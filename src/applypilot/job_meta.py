@@ -7,8 +7,20 @@ dashboard labels.
 
 from __future__ import annotations
 
+import logging
 import re
-from urllib.parse import urlparse
+from html import unescape
+from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
+
+log = logging.getLogger(__name__)
+
+# LinkedIn embeds the off-site apply target in <code id="applyUrl">?url=...</code>
+_LINKEDIN_APPLY_URL_RE = re.compile(r"(?<=\?url=)[^\"<]+")
+_LINKEDIN_JOB_ID_RE = re.compile(
+    r"(?:linkedin\.com/jobs/view/|currentJobId=)(\d{5,})",
+    re.IGNORECASE,
+)
 
 # Aggregator / job-board hosts that are weak as application destinations.
 _BOARD_HOSTS = frozenset({
@@ -112,13 +124,91 @@ def display_company(job: dict) -> str:
     if company:
         return company
 
+    site = (job.get("site") or "").strip()
     for key in ("application_url", "url"):
         inferred = infer_company_from_url(job.get(key))
         if inferred:
-            return inferred
+            return _prefer_site_label(inferred, site)
 
-    site = (job.get("site") or "").strip()
     return site or "Unknown"
+
+
+def _prefer_site_label(inferred: str, site: str) -> str:
+    """Prefer a human site label (Motorola Solutions) over a mashed URL slug."""
+    if not site or site.lower() in _BOARD_SITE_LABELS:
+        return inferred
+    slug = inferred.replace(" ", "").lower()
+    label = site.replace(" ", "").lower()
+    if slug == label or slug in label or label in slug:
+        return site
+    return inferred
+
+
+def persist_missing_company(conn, job: dict) -> str:
+    """Write display_company into jobs.company when the column is empty."""
+    label = display_company(job)
+    if not (job.get("company") or "").strip() and label and label.lower() != "unknown":
+        url = job.get("url")
+        if url:
+            conn.execute("UPDATE jobs SET company = ? WHERE url = ?", (label, url))
+            job["company"] = label
+    return label
+
+
+def _norm_title(title: str | None) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", (title or "").lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _norm_apply_url(url: str | None) -> str:
+    if not url or not isinstance(url, str):
+        return ""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url.split("?")[0].rstrip("/").lower()
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").rstrip("/").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return f"{host}{path}"
+
+
+def already_applied_same_role(conn, job: dict) -> bool:
+    """True when we already submitted this apply URL or the same title at the same employer."""
+    url = job.get("url") or ""
+    title_n = _norm_title(job.get("title"))
+    company = display_company(job).strip().lower()
+    apply_n = _norm_apply_url(job.get("application_url"))
+    if not title_n:
+        return False
+
+    rows = conn.execute(
+        """
+        SELECT url, title, company, site, application_url
+        FROM jobs
+        WHERE apply_status = 'applied' AND url != ?
+        """,
+        (url,),
+    ).fetchall()
+    for row in rows:
+        other = dict(row)
+        other_apply = _norm_apply_url(other.get("application_url"))
+        if apply_n and other_apply and apply_n == other_apply:
+            return True
+        other_title = _norm_title(other.get("title"))
+        other_co = display_company(other).strip().lower()
+        if (
+            title_n
+            and title_n == other_title
+            and company
+            and other_co
+            and company == other_co
+            and company not in _BOARD_SITE_LABELS
+            and company != "unknown"
+        ):
+            return True
+    return False
 
 
 def is_board_site_label(site: str | None) -> bool:
@@ -157,11 +247,218 @@ def classify_apply_url(url: str | None) -> tuple[bool, str]:
         if "talent.com" in host or path.startswith("/redirect"):
             return False, "aggregator_redirect"
 
-    if host in _BOARD_HOSTS:
+    if host in _BOARD_HOSTS or host.endswith(".linkedin.com"):
         # Pure job-board view pages are poor apply targets (prefer careers ATS URL).
         return False, "job_board_apply_url"
 
     return True, ""
+
+
+def linkedin_job_id(url: str | None) -> str | None:
+    """Extract a numeric LinkedIn job id from a view or search-results URL."""
+    if not url:
+        return None
+    m = _LINKEDIN_JOB_ID_RE.search(str(url))
+    return m.group(1) if m else None
+
+
+def linkedin_job_view_url(url: str | None) -> str | None:
+    """Normalize LinkedIn search/view URLs to ``/jobs/view/{id}``."""
+    job_id = linkedin_job_id(url)
+    if not job_id:
+        return None
+    return f"https://www.linkedin.com/jobs/view/{job_id}"
+
+
+def parse_linkedin_apply_url_from_html(html: str | None) -> str | None:
+    """Parse LinkedIn's embedded off-site apply target from job HTML.
+
+    Public LinkedIn job pages often include::
+
+        <code id="applyUrl" style="display: none"><!--"?url=https%3A%2F%2F... "--></code>
+
+    Easy Apply-only postings omit this and cannot be auto-applied via ATS.
+    """
+    if not html:
+        return None
+
+    # Prefer the dedicated applyUrl blob JobSpy also reads.
+    m = re.search(
+        r'<code[^>]*\bid=["\']applyUrl["\'][^>]*>(.*?)</code>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    blob = m.group(1) if m else html
+    blob = unescape(blob)
+
+    match = _LINKEDIN_APPLY_URL_RE.search(blob)
+    if match:
+        return _clean_apply_url(unquote(match.group(0)).strip().rstrip('"').rstrip("'"))
+
+    # Fallback: explicit url= query inside applyUrl-ish JSON/text.
+    for key in ("applyUrl", "companyApplyUrl", "externalApplyUrl"):
+        qm = re.search(rf'"{key}"\s*:\s*"([^"]+)"', html)
+        if qm:
+            candidate = unquote(unescape(qm.group(1))).strip()
+            if candidate.startswith("http"):
+                return _clean_apply_url(candidate)
+    return None
+
+
+def _clean_apply_url(url: str) -> str:
+    """Normalize leaked JSON escapes and trailing junk in apply targets."""
+    cleaned = (
+        url.replace("\\u0026", "&")
+        .replace("\\u002f", "/")
+        .replace("\\/", "/")
+        .replace("\\u003d", "=")
+        .replace("\\u003f", "?")
+        .rstrip("\\")
+        .strip()
+        .rstrip('"')
+        .rstrip("'")
+    )
+    return cleaned
+
+
+def _linkedin_li_at_cookie() -> str | None:
+    """Optional LinkedIn session cookie for off-site apply resolution."""
+    try:
+        from applypilot.discovery.linkedin_auth import get_li_at
+        return get_li_at()
+    except Exception:
+        from applypilot.config import load_env
+        import os
+        load_env()
+        raw = (os.environ.get("LINKEDIN_LI_AT") or os.environ.get("APPLYPILOT_LINKEDIN_LI_AT") or "").strip()
+        return raw or None
+
+
+def _http_get(url: str, timeout: float = 15.0, cookie: str | None = None) -> tuple[str, str]:
+    """GET url; return (final_url, body_text). Raises on HTTP errors."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if cookie:
+        headers["Cookie"] = cookie if "=" in cookie else f"li_at={cookie}"
+    req = Request(url, headers=headers, method="GET")
+    with urlopen(req, timeout=timeout) as resp:  # noqa: S310 — apply URL resolver
+        final = resp.geturl() or url
+        body = resp.read().decode("utf-8", errors="ignore")
+        return final, body
+
+
+def follow_apply_redirects(url: str, timeout: float = 15.0) -> str:
+    """Follow HTTP redirects and return the final URL (best-effort)."""
+    if not url or not str(url).strip().lower().startswith(("http://", "https://")):
+        return url
+    try:
+        final, _body = _http_get(url, timeout=timeout)
+        return final
+    except Exception as exc:
+        log.debug("follow_apply_redirects failed for %s: %s", url[:120], exc)
+        return url
+
+
+def resolve_linkedin_apply_url(
+    job_url: str | None,
+    html: str | None = None,
+    *,
+    follow: bool = True,
+    timeout: float = 15.0,
+) -> str | None:
+    """Resolve a LinkedIn job listing to an off-site ATS/career apply URL.
+
+    Public LinkedIn pages often omit the company apply target (sign-in wall).
+    Set ``LINKEDIN_LI_AT`` in ``~/.applypilot/.env`` (or run
+    ``applypilot linkedin-auth``) so company-website applies can be resolved.
+    Easy Apply-only posts still return None.
+    """
+    apply_url = parse_linkedin_apply_url_from_html(html) if html else None
+    li_at = _linkedin_li_at_cookie()
+    cookie_header = f"li_at={li_at}" if li_at else None
+
+    view = linkedin_job_view_url(job_url)
+    job_id = linkedin_job_id(job_url)
+
+    def _try_fetch(url: str, cookie: str | None) -> str | None:
+        try:
+            _final, page_html = _http_get(url, timeout=timeout, cookie=cookie)
+        except Exception as exc:
+            log.debug("LinkedIn apply fetch failed for %s: %s", url, exc)
+            return None
+        return parse_linkedin_apply_url_from_html(page_html)
+
+    if not apply_url and view:
+        apply_url = _try_fetch(view, cookie_header)
+
+    # Guest jobPosting endpoint sometimes still embeds apply targets.
+    if not apply_url and job_id:
+        apply_url = _try_fetch(
+            f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}",
+            cookie_header,
+        )
+
+    if not apply_url:
+        if not li_at:
+            log.debug(
+                "LinkedIn apply URL unavailable without session cookie "
+                "(run: applypilot linkedin-auth --login) for %s",
+                view or job_url,
+            )
+        else:
+            # Cookie may have expired — try one profile refresh, then retry once.
+            try:
+                from applypilot.discovery.linkedin_auth import (
+                    cookie_looks_valid,
+                    refresh_li_at_from_profile,
+                )
+                ok_cookie, _ = cookie_looks_valid(li_at)
+                if not ok_cookie:
+                    refreshed = refresh_li_at_from_profile(headless=True)
+                    if refreshed:
+                        cookie_header = f"li_at={refreshed}"
+                        if view:
+                            apply_url = _try_fetch(view, cookie_header)
+                        if not apply_url and job_id:
+                            apply_url = _try_fetch(
+                                f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}",
+                                cookie_header,
+                            )
+            except Exception as exc:
+                log.debug("LinkedIn cookie refresh skipped: %s", exc)
+        if not apply_url:
+            return None
+
+    final = follow_apply_redirects(apply_url, timeout=timeout) if follow else apply_url
+    ok, _reason = classify_apply_url(final)
+    return final if ok else None
+
+
+def normalize_board_apply_url(url: str | None, *, follow: bool = True) -> str | None:
+    """Return a usable ATS apply URL, following redirects from board wrappers."""
+    if not url:
+        return None
+    url = str(url).strip()
+    ok, _ = classify_apply_url(url)
+    if ok:
+        return url
+
+    host = _hostname(url)
+    if host.endswith("linkedin.com") or host == "linkedin.com":
+        return resolve_linkedin_apply_url(url, follow=follow)
+
+    if follow and url.lower().startswith(("http://", "https://")):
+        final = follow_apply_redirects(url)
+        ok, _ = classify_apply_url(final)
+        return final if ok else None
+    return None
 
 
 def job_has_usable_apply_url(job: dict | None) -> tuple[bool, str]:

@@ -37,8 +37,8 @@ OUTCOME_PRIORITY = {
 }
 
 INTERVIEW_RE = re.compile(
-    r"\b(interview|schedule a call|phone screen|next steps|speak with you|"
-    r"availability for|meet with the team)\b",
+    r"\b(interview|phone screen|phone-screen|schedule (an )?interview|"
+    r"invite(d)? you to interview|onsite interview|on-site interview)\b",
     re.I,
 )
 REJECT_RE = re.compile(
@@ -49,7 +49,7 @@ REJECT_RE = re.compile(
 CONFIRM_RE = re.compile(
     r"\b(thank you for (your )?apply|application (has been )?received|"
     r"we received your application|application was submitted|"
-    r"thanks for applying)\b",
+    r"thanks for applying|we('ve| have) got your application)\b",
     re.I,
 )
 OFFER_RE = re.compile(r"\b(offer of employment|job offer|pleased to offer)\b", re.I)
@@ -57,6 +57,20 @@ OFFER_RE = re.compile(r"\b(offer of employment|job offer|pleased to offer)\b", r
 ATS_HINTS = (
     "greenhouse", "myworkday", "workday", "ashbyhq", "lever.co", "smartrecruiters",
     "icims", "jobvite", "bamboohr", "successfactors", "taleo", "rippling",
+)
+
+# ATS product / board labels are not employers. Matching them in From:
+# (e.g. noreply@myworkday.com) against site=Workday jobs caused false outcomes.
+_GENERIC_EMPLOYERS = frozenset({
+    "workday", "greenhouse", "ashby", "lever", "icims", "jobvite",
+    "smartrecruiters", "bamboohr", "taleo", "rippling", "successfactors",
+    "indeed", "linkedin", "unknown", "talent.com", "ziprecruiter",
+    "glassdoor", "simplyhired", "dice", "google",
+})
+
+OTP_RE = re.compile(
+    r"\b(security code|verification code|one[- ]time (code|password)|otp)\b",
+    re.I,
 )
 
 
@@ -136,7 +150,7 @@ def _access_token(token: dict) -> str:
     return str(token["access_token"])
 
 
-def _gmail_get(path: str, token: dict, params: dict | None = None) -> dict:
+def _gmail_get(path: str, token: dict, params: dict | None = None, *, _retried: bool = False) -> dict:
     access = _access_token(token)
     qs = ""
     if params:
@@ -148,6 +162,11 @@ def _gmail_get(path: str, token: dict, params: dict | None = None) -> dict:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:300]
+        # Access tokens expire ~1h; a long score/tailor/apply run can leave a stale one.
+        if e.code == 401 and not _retried and token.get("refresh_token"):
+            token["access_token"] = ""
+            token["expiry_date"] = 0
+            return _gmail_get(path, token, params, _retried=True)
         raise SystemExit(f"Gmail API HTTP {e.code}: {detail}") from e
 
 
@@ -171,6 +190,8 @@ def _snippet_and_subject(msg: dict) -> tuple[str, str, str]:
 
 def classify_email(subject: str, snippet: str, from_addr: str) -> str:
     blob = f"{subject}\n{snippet}\n{from_addr}"
+    if OTP_RE.search(blob):
+        return "unknown"
     if OFFER_RE.search(blob):
         return "offer"
     if INTERVIEW_RE.search(blob):
@@ -199,19 +220,42 @@ def _job_search_terms(job: dict) -> list[str]:
 
 
 def _score_match(job: dict, subject: str, snippet: str, from_addr: str) -> float:
-    blob = f"{subject} {snippet} {from_addr}".lower()
+    """Score how well an email belongs to a job.
+
+    Company is matched against subject/snippet only — never From:. ATS vendors
+    send from *@myworkday.com / *@greenhouse.io, which would otherwise attach
+    every Workday-ATS rejection to every site=Workday job.
+    """
+    text = f"{subject} {snippet}".lower()
+    from_l = (from_addr or "").lower()
     company = display_company(job).lower()
+    company_core = company.split(",")[0].strip()
+    company_is_generic = (not company_core) or (company_core in _GENERIC_EMPLOYERS)
+
     score = 0.0
-    if company and company.split(",")[0].strip() in blob:
+    company_hit = bool(company_core) and not company_is_generic and company_core in text
+    if company_hit:
         score += 0.55
+
     title = (job.get("title") or "").lower()
+    title_norm = re.sub(r"[^a-z0-9 ]+", " ", title)
+    title_norm = re.sub(r"\s+", " ", title_norm).strip()
     title_tokens = [t for t in re.findall(r"[a-z]{4,}", title) if t not in {
         "senior", "staff", "engineer", "software", "developer", "full", "stack",
     }]
-    hits = sum(1 for t in title_tokens[:4] if t in blob)
+    hits = sum(1 for t in title_tokens[:4] if t in text)
+    title_phrase = len(title_norm) >= 12 and title_norm in text
+    if title_phrase:
+        hits += 2
+        score += 0.25
     score += min(0.35, hits * 0.12)
-    if any(h in blob for h in ATS_HINTS):
+
+    if any(h in from_l or h in text for h in ATS_HINTS):
         score += 0.1
+
+    # Require a real employer mention or a distinctive title token.
+    if not company_hit and hits == 0:
+        return 0.0
     return score
 
 
@@ -265,6 +309,8 @@ def poll(*, days: int = 14, dry_run: bool = False, min_confidence: float = 0.45)
             {"format": "metadata", "metadataHeaders": ["Subject", "From", "Date"]},
         )
         subject, from_addr, snippet = _snippet_and_subject(msg)
+        if OTP_RE.search(f"{subject}\n{snippet}"):
+            continue
         outcome = classify_email(subject, snippet, from_addr)
         if outcome == "unknown" and not any(h in f"{subject}{from_addr}".lower() for h in ATS_HINTS):
             continue
@@ -326,8 +372,78 @@ def main() -> None:
         default=0.45,
         help="Minimum match score to attach an email to a job",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run matcher unit checks and exit (no Gmail / DB writes)",
+    )
     args = parser.parse_args()
+    if args.self_test:
+        _self_test()
+        return
     poll(days=args.days, dry_run=args.dry_run, min_confidence=args.min_confidence)
+
+
+def _self_test() -> None:
+    workday_mlops = {
+        "title": "Software Development Engineer - ML Ops (US Federal)",
+        "company": None,
+        "site": "Workday",
+        "application_url": "https://workday.wd5.myworkdayjobs.com/Workday/job/x",
+    }
+    nelnet = {
+        "title": "Sr Staff Engineer",
+        "company": "Nelnet",
+        "site": "indeed",
+        "application_url": "https://nelnet.wd1.myworkdayjobs.com/x",
+    }
+    nvidia = {
+        "title": "Senior Backend Platform Engineer",
+        "company": None,
+        "site": "NVIDIA",
+        "application_url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/x",
+    }
+    # False-positive case from 2026-08-20: Nelnet Workday rejection attached to ML Ops.
+    nelnet_mail = (
+        "Application Update",
+        "DearEli, Thank you for your interest in Sr Staff Engineer. We received many candidates "
+        "for this role, and unfortunately, this role was filled",
+        "noreply@myworkday.com",
+    )
+    assert classify_email(*nelnet_mail) == "rejected"
+    assert _score_match(workday_mlops, *nelnet_mail) == 0.0
+    assert _score_match(nelnet, *nelnet_mail) >= 0.45
+
+    nvidia_mail = (
+        "Thank you for your interest in NVIDIA",
+        "Dear Eli Hebdon - We want to confirm that your application for Senior Backend Platform Engineer",
+        "noreply@myworkday.com",
+    )
+    assert classify_email(*nvidia_mail) == "confirmed"
+    assert _score_match(nvidia, *nvidia_mail) >= 0.45
+    assert _score_match(workday_mlops, *nvidia_mail) == 0.0
+
+    otp_mail = (
+        "Security code for your application to Sagent",
+        "Hi Eli, Copy and paste this code into the security field",
+        "noreply@sagent.com",
+    )
+    assert classify_email(*otp_mail) == "unknown"
+
+    solo_mail = (
+        "Solo.io - we've got your application!",
+        "Hi Eli, We're glad you're interested in joining",
+        "careers@solo.io",
+    )
+    assert classify_email(*solo_mail) == "confirmed"
+
+    interview_mail = (
+        "Interview invitation",
+        "We would like to invite you to interview for the role",
+        "recruiting@example.com",
+    )
+    assert classify_email(*interview_mail) == "interview"
+    print("poll_application_emails self-test: ok")
 
 
 if __name__ == "__main__":

@@ -281,6 +281,36 @@ def load_env():
     load_dotenv()
 
 
+def set_env_var(key: str, value: str) -> Path:
+    """Upsert a KEY=value line in ``~/.applypilot/.env`` (creates file if needed).
+
+    Does not print the value. Returns the env file path.
+    """
+    key = (key or "").strip()
+    if not key or "=" in key or any(c.isspace() for c in key):
+        raise ValueError(f"Invalid env key: {key!r}")
+
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    text = ENV_PATH.read_text(encoding="utf-8") if ENV_PATH.exists() else "# ApplyPilot configuration\n"
+    lines = text.splitlines()
+    prefix = f"{key}="
+    replaced = False
+    out: list[str] = []
+    for line in lines:
+        if line.startswith(prefix):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        if out and out[-1].strip():
+            out.append("")
+        out.append(f"{key}={value}")
+    ENV_PATH.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    os.environ[key] = value
+    return ENV_PATH
+
+
 # ---------------------------------------------------------------------------
 # Tier system — feature gating by installed dependencies
 # ---------------------------------------------------------------------------

@@ -113,8 +113,13 @@ def _run_enrich(workers: int = 1) -> dict:
 def _run_score() -> dict:
     """Stage: LLM scoring — assign fit scores 1-10."""
     try:
+        import os
         from applypilot.scoring.scorer import run_scoring
-        run_scoring()
+        raw = os.environ.get("SCORE_LIMIT", os.environ.get("DAILY_APPLY_SCORE_LIMIT", "")).strip()
+        limit = int(raw) if raw.isdigit() and int(raw) > 0 else 0
+        if limit:
+            log.info("Scoring at most %d jobs (SCORE_LIMIT / DAILY_APPLY_SCORE_LIMIT)", limit)
+        run_scoring(limit=limit)
         return {"status": "ok"}
     except Exception as e:
         log.error("Scoring failed: %s", e)

@@ -34,6 +34,37 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 # Sites that block scraping -- skip detail extraction entirely
 SKIP_DETAIL_SITES = {"glassdoor", "google", "Workopolis"}
 
+# Board sites where JobSpy often ships a JD without a usable ATS apply URL.
+# Re-queue these for enrich when application_url is missing or still on-board.
+_APPLY_RESOLVE_SITES = ("linkedin", "indeed", "zip_recruiter")
+
+
+def _pending_detail_where(alias: str = "") -> str:
+    """SQL WHERE clause for jobs that still need detail/apply-url enrichment.
+
+    Re-queues board jobs whose stored apply URL is still an on-board link.
+    Does **not** re-queue jobs already enriched with a null apply URL (Easy Apply /
+    unresolved) — those stay marked complete so we do not loop forever.
+    """
+    prefix = f"{alias}." if alias else ""
+    skip_filter = " AND ".join(f"{prefix}site != '{s}'" for s in SKIP_DETAIL_SITES)
+    sites = ", ".join(f"'{s}'" for s in _APPLY_RESOLVE_SITES)
+    return (
+        f"( "
+        f"{prefix}detail_scraped_at IS NULL "
+        f"OR ( "
+        f"  LOWER({prefix}site) IN ({sites}) "
+        f"  AND {prefix}application_url IS NOT NULL "
+        f"  AND TRIM({prefix}application_url) != '' "
+        f"  AND ( "
+        f"    LOWER({prefix}application_url) LIKE '%linkedin.com%' "
+        f"    OR LOWER({prefix}application_url) LIKE '%indeed.com%' "
+        f"    OR LOWER({prefix}application_url) LIKE '%ziprecruiter.com%' "
+        f"  ) "
+        f") "
+        f") AND {skip_filter}"
+    )
+
 # Module-level proxy config (set from CLI or caller)
 _PROXY_CONFIG: dict | None = None
 
@@ -543,7 +574,14 @@ PERMANENT_FAILURES = {404, 410, 451}
 
 def scrape_detail_page(page, url: str) -> dict:
     """Full cascade for one detail page."""
-    from applypilot.job_meta import infer_company_from_url
+    from applypilot.job_meta import (
+        classify_apply_url,
+        infer_company_from_url,
+        linkedin_job_view_url,
+        normalize_board_apply_url,
+        parse_linkedin_apply_url_from_html,
+        resolve_linkedin_apply_url,
+    )
 
     result: dict = {
         "full_description": None,
@@ -554,11 +592,69 @@ def scrape_detail_page(page, url: str) -> dict:
         "error": None,
     }
     t0 = time.time()
+    pre_resolved_apply = None
+
+    # LinkedIn: resolve off-site apply URL via public job HTML before Playwright.
+    # Easy Apply-only posts return None; company-website applies become ATS links.
+    linkedin_view = linkedin_job_view_url(url)
+    if linkedin_view:
+        pre_resolved_apply = resolve_linkedin_apply_url(linkedin_view, follow=True)
+        if pre_resolved_apply:
+            result["application_url"] = pre_resolved_apply
+            result["company"] = infer_company_from_url(pre_resolved_apply)
+        url = linkedin_view
+
+    def _finalize(tier: int | None) -> dict:
+        """Normalize board apply URLs and set status without wiping pre-resolved ATS links."""
+        apply = result.get("application_url") or pre_resolved_apply
+        if apply and not classify_apply_url(apply)[0]:
+            # Try LinkedIn HTML on the live page, then generic redirect follow.
+            try:
+                html = page.content()
+            except Exception:
+                html = None
+            if linkedin_view and html:
+                parsed = parse_linkedin_apply_url_from_html(html)
+                if parsed:
+                    apply = parsed
+            normalized = normalize_board_apply_url(apply, follow=True)
+            apply = normalized or (pre_resolved_apply if pre_resolved_apply else apply)
+
+        if apply and classify_apply_url(apply)[0]:
+            result["application_url"] = apply
+        elif pre_resolved_apply:
+            result["application_url"] = pre_resolved_apply
+        elif apply and not classify_apply_url(apply)[0]:
+            # Keep board URL out of application_url so Stage 6 does not treat it as ready.
+            result["application_url"] = None
+
+        if not result.get("company"):
+            result["company"] = infer_company_from_url(result.get("application_url"))
+
+        if tier is not None:
+            result["tier_used"] = tier
+
+        if result.get("full_description") and result.get("application_url"):
+            result["status"] = "ok"
+        elif result.get("full_description") or result.get("application_url"):
+            result["status"] = "partial"
+        else:
+            result["status"] = "error"
+            result["error"] = result.get("error") or "no data extracted"
+
+        result["elapsed"] = time.time() - t0
+        return result
 
     try:
         resp = page.goto(url, timeout=45000)
         if resp and resp.status in PERMANENT_FAILURES:
             result["error"] = f"HTTP {resp.status}"
+            # LinkedIn apply may already be resolved without needing the page body.
+            if result.get("application_url"):
+                result["status"] = "partial"
+                result["tier_used"] = 1
+                result["elapsed"] = time.time() - t0
+                return result
             result["elapsed"] = time.time() - t0
             return result
         page.wait_for_load_state("domcontentloaded", timeout=15000)
@@ -572,6 +668,11 @@ def scrape_detail_page(page, url: str) -> dict:
             result["error"] = "timeout"
         else:
             result["error"] = err_str[:200]
+        if result.get("application_url"):
+            result["status"] = "partial"
+            result["tier_used"] = result.get("tier_used") or 1
+            result["elapsed"] = time.time() - t0
+            return result
         result["elapsed"] = time.time() - t0
         return result
 
@@ -580,17 +681,16 @@ def scrape_detail_page(page, url: str) -> dict:
     # Tier 1: JSON-LD
     json_ld_result = extract_from_json_ld(intel)
     if json_ld_result and json_ld_result.get("full_description"):
-        result.update(json_ld_result)
-        result["tier_used"] = 1
+        result["full_description"] = json_ld_result.get("full_description")
+        if json_ld_result.get("application_url") and not result.get("application_url"):
+            result["application_url"] = json_ld_result.get("application_url")
+        if json_ld_result.get("company") and not result.get("company"):
+            result["company"] = json_ld_result.get("company")
         if not result.get("application_url"):
             apply = extract_apply_url_deterministic(page)
             if apply:
                 result["application_url"] = apply
-        if not result.get("company"):
-            result["company"] = infer_company_from_url(result.get("application_url"))
-        result["status"] = "ok" if result.get("application_url") else "partial"
-        result["elapsed"] = time.time() - t0
-        return result
+        return _finalize(1)
 
     # Tier 2: Deterministic CSS
     desc = extract_description_deterministic(page)
@@ -598,33 +698,18 @@ def scrape_detail_page(page, url: str) -> dict:
 
     if desc:
         result["full_description"] = desc
-        result["application_url"] = apply
-        result["company"] = infer_company_from_url(apply)
-        result["tier_used"] = 2
-        result["status"] = "ok" if apply else "partial"
-        result["elapsed"] = time.time() - t0
-        return result
+        if apply and not result.get("application_url"):
+            result["application_url"] = apply
+        return _finalize(2)
 
     tier2_apply = apply
 
     # Tier 3: LLM
     llm_result = extract_with_llm(page, url)
     result["full_description"] = llm_result.get("full_description")
-    result["application_url"] = llm_result.get("application_url") or tier2_apply
-    result["company"] = infer_company_from_url(result.get("application_url"))
-    result["tier_used"] = 3
-
-    if result.get("full_description"):
-        result["status"] = "ok" if result.get("application_url") else "partial"
-    elif result.get("application_url"):
-        result["status"] = "partial"
-    else:
-        result["status"] = "error"
-        result["error"] = "no data extracted"
-
-    result["elapsed"] = time.time() - t0
-    return result
-
+    if not result.get("application_url"):
+        result["application_url"] = llm_result.get("application_url") or tier2_apply
+    return _finalize(3)
 
 def scrape_site_batch(
     conn: sqlite3.Connection | None,
@@ -683,8 +768,12 @@ def scrape_site_batch(
 
                 if status in ("ok", "partial"):
                     stats[status] += 1
+                    # Preserve an existing JD when enrich only resolved the apply URL.
+                    # Always write application_url (may be NULL after rejecting board links).
                     conn.execute(
-                        "UPDATE jobs SET full_description = ?, application_url = ?, "
+                        "UPDATE jobs SET "
+                        "full_description = COALESCE(?, full_description), "
+                        "application_url = ?, "
                         "company = COALESCE(?, company), "
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
                         (
@@ -730,7 +819,7 @@ def _run_detail_scraper(
     Returns aggregate stats dict.
     """
     skip_filter = " AND ".join(f"site != '{s}'" for s in SKIP_DETAIL_SITES)
-    where = f"WHERE detail_scraped_at IS NULL AND {skip_filter}"
+    where = f"WHERE {_pending_detail_where()}"
     rows = conn.execute(
         f"SELECT url, title, site FROM jobs {where} ORDER BY site"
     ).fetchall()
@@ -844,7 +933,7 @@ def stream_detail(
             skip_filter = " AND ".join(f"site != '{s}'" for s in SKIP_DETAIL_SITES)
             rows = conn.execute(
                 "SELECT url, title, site FROM jobs "
-                f"WHERE detail_scraped_at IS NULL AND {skip_filter} "
+                f"WHERE {_pending_detail_where()} "
                 "ORDER BY site LIMIT 200"
             ).fetchall()
 
