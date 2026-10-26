@@ -17,6 +17,8 @@ The old Cursor path (`daily_apply.sh`, `cursor_apply.py`, CapSolver) is still in
 | Queue copy (WSL) | `~/.applypilot/claude/queue-<YYYY-MM-DD>.json` |
 | Hosts it applies on | `src/applypilot/config/sites.yaml`: any apply host except `claude_account_hosts` (Workday, iCIMS, Taleo, SuccessFactors, Oracle, …); `claude_apply_hosts` (Greenhouse, Ashby, Lever, …) go first within a fit score. Set `claude_apply_any_host: false` to allow only the named ATSs. |
 | Resume Playbook (copy) | `.apply-queue\resume_playbook.md`, refreshed from Notion each run. While it exists, tailoring uses only its approved bullet bank and skills list, strips Senior/levels from the headline, rejects judge failures, and writes 150–200-word cover letters (`src/applypilot/scoring/playbook.py`). |
+| ATS keyword coverage | Tailoring asks the model for the job's top 10 hard skills (`jd_top_skills`), matches them against the resume (`scoring/keywords.py`, alias- and word-boundary-aware), retries when a skill Eli has is missing, and stores the result in `jobs.keyword_coverage` and `queue.json`. |
+| Interview Story Bank | Notion page `4056b7634ff381d1be5fcf090c1bedab` under Job Search: STAR stories from approved facts, mapped to common questions. |
 | Notion | Applications table (`collection://583a8f0e-4cc1-4395-9662-3b4150ab1144`): shared board with Job Hunter (Grok). Check the company, then claim the row (Status In progress, Agent = Claude routine) before filling; status updates. Form-answer rules: the bots page. |
 | Scheduled task prompt | `C:\Users\elihe\.claude\scheduled-tasks\applypilot-daily\SKILL.md` |
 
@@ -93,7 +95,7 @@ For each job in `queue.json`, in rank order:
 8. CAPTCHA (reCAPTCHA, hCaptcha, Turnstile, puzzles): do not solve or bypass it and do not call CapSolver. Leave the tab open with everything else filled; `-s needs_eli --note captcha`.
 9. Consent/terms checkboxes and acknowledgement dropdowns: leave unset; list them in the summary. They are ticked when Eli approves.
 10. Review the whole form, then `-s filled --note "<one line: what was filled, any judgment calls>"`. Leave the tab open. Do not click Submit.
-11. **Update the claimed row.** Resume version = Full Stack when the resume headline says Full Stack, else Backend/Identity; append Notes `<YYYY-MM-DD h:mm a MT> (Claude routine): <filled | needs Eli: why>; pay <range or not posted>; JD top skills covered: …; missing: …`. Attach the uploaded resume PDF to Resume (and the cover letter to Cover letter when one was used) with the Notion file-upload tool; if that fails, put the local path in Notes. A claimed job that turns out closed or location-ineligible: Status = Skipped with the reason.
+11. **Update the claimed row.** Resume version = Full Stack when the resume headline says Full Stack, else Backend/Identity; append Notes `<YYYY-MM-DD h:mm a MT> (Claude routine): <filled | needs Eli: why>; pay <range or not posted>; ATS coverage <score as %>: covered …; gaps …` using the job's `keyword_coverage` from `queue.json` (`covered`, `missing_gap`; `missing_on_list` should be empty because tailoring retries until those are added, so list any that remain as "fixable"). Attach the uploaded resume PDF to Resume (and the cover letter to Cover letter when one was used) with the Notion file-upload tool; if that fails, put the local path in Notes. A claimed job that turns out closed or location-ineligible: Status = Skipped with the reason.
 
 ### Notion status updates
 
@@ -109,7 +111,7 @@ Keep Notes append-only: add a dated line, never rewrite earlier ones.
 
 Reply with (and send a push notification when the tool is available):
 
-- **Ready to submit** — numbered: title @ company, fit score, apply link, notable answers or consent boxes.
+- **Ready to submit** — numbered: title @ company, fit score, ATS keyword coverage (%), apply link, notable answers or consent boxes.
 - **Needs you** — CAPTCHA / account / question jobs with the open tab or link and what is left.
 - **Skipped** — closed, location, form errors.
 - **Still waiting from earlier days** — from `applypilot claude pending`.

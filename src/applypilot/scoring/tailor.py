@@ -20,6 +20,7 @@ from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile, title_is_
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.employment import format_employment_for_prompt, normalize_experience_headers
+from applypilot.scoring.keywords import allowed_skills, coverage
 from applypilot.scoring.playbook import load_playbook, strip_seniority
 from applypilot.scoring.resume_format import assemble_resume_text
 from applypilot.scoring.validator import (
@@ -221,7 +222,9 @@ EMPLOYER RULES:
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages & Frameworks":"...","Cloud & Infrastructure":"..."}},"experience":[{{"company":"Equifax","location":"Boise, ID","title":"Software Development Engineer","dates":"June 2025-Present","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"name":"AnyWidget","description":"Android home screen widget app. Built with Kotlin, Firebase, MySQL, and Google Stitch. Over 1k downloads on the Google Play Store."}}],"education":{{"school":"{school}","location":"Salt Lake City, UT","degree":"Bachelor of Science in Computer Science, Minor in Russian","year":"2021","highlights":["highlight 1","highlight 2"]}},"additional_information":"{additional_example}"}}
+{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages & Frameworks":"...","Cloud & Infrastructure":"..."}},"experience":[{{"company":"Equifax","location":"Boise, ID","title":"Software Development Engineer","dates":"June 2025-Present","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"name":"AnyWidget","description":"Android home screen widget app. Built with Kotlin, Firebase, MySQL, and Google Stitch. Over 1k downloads on the Google Play Store."}}],"education":{{"school":"{school}","location":"Salt Lake City, UT","degree":"Bachelor of Science in Computer Science, Minor in Russian","year":"2021","highlights":["highlight 1","highlight 2"]}},"additional_information":"{additional_example}","jd_top_skills":["the job's 10 most important hard skills, most important first, in the job's own spelling"]}}
+
+jd_top_skills: hard skills only (languages, frameworks, databases, cloud, tools, protocols, practices like CI/CD). No soft skills, no degrees. This list is used to measure ATS keyword coverage; every one that is in the SKILLS BOUNDARY must appear in the resume.
 {playbook_block}"""
 
 
@@ -502,6 +505,17 @@ def tailor_resume(
             }
             return tailored, report
 
+        # Layer 1c: ATS keyword coverage. Skills Eli has that the job ranks in its
+        # top 10 must be visible; retry once per attempt budget to add them.
+        cov = coverage(data.get("jd_top_skills"), tailored, allowed_skills(profile))
+        report["keyword_coverage"] = cov
+        if cov and cov["missing_on_list"] and attempt < max_retries:
+            avoid_notes.append(
+                "ATS coverage: the job ranks these skills Eli has, but the resume does not show them. "
+                f"Add them to SKILLS in the job's spelling: {', '.join(cov['missing_on_list'])}"
+            )
+            continue
+
         # Layer 2: LLM judge (catches subtle fabrication) — skipped in lenient mode
         if validation_mode == "lenient":
             report["judge"] = {"verdict": "SKIPPED", "passed": True, "issues": "none"}
@@ -652,6 +666,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
                 "site": job["site"],
                 "status": report["status"],
                 "attempts": report["attempts"],
+                "keyword_coverage": report.get("keyword_coverage"),
             }
         except Exception as e:
             result = {
@@ -679,10 +694,11 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     _success_statuses = {"approved", "approved_with_judge_warning"}
     for r in results:
         if r["status"] in _success_statuses:
+            cov = r.get("keyword_coverage")
             conn.execute(
-                "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+                "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, keyword_coverage=?, "
                 "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["path"], now, r["url"]),
+                (r["path"], now, json.dumps(cov) if cov else None, r["url"]),
             )
         else:
             conn.execute(

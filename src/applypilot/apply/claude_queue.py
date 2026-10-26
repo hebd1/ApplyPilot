@@ -94,7 +94,7 @@ def build_candidate_query(
     sql = f"""
         SELECT url, title, site, company, application_url, tailored_resume_path,
                cover_letter_path, fit_score, score_reasoning, location,
-               full_description, discovered_at
+               full_description, discovered_at, keyword_coverage
         FROM jobs
         WHERE tailored_resume_path IS NOT NULL
           AND applied_at IS NULL
@@ -250,6 +250,13 @@ def to_windows_path(path: Path) -> str:
     return s
 
 
+def _load_json(raw):
+    try:
+        return json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", text or "").strip("-")[:40] or "job"
 
@@ -323,6 +330,7 @@ def export_batch(jobs: list[dict], export_root: Path | None = None, *, day: str 
             "resume_pdf": to_windows_path(resume),
             "cover_letter_pdf": to_windows_path(cover_pdf) if cover_pdf else None,
             "cover_letter_text": resolve_cover_letter_text(job),
+            "keyword_coverage": _load_json(job.get("keyword_coverage")),
             "job_description": (job.get("full_description") or "")[:3000],
         })
 

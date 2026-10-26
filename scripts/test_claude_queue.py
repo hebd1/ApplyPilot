@@ -95,10 +95,14 @@ def main() -> None:
         assert [j["url"] for j in again] == ["wd-gamma", "gh-acme-2"], [j["url"] for j in again]
 
         # Export: PDFs copied under <root>/<day>/<n>-<company>/ with queue.json.
+        assert "keyword_coverage" in picked[0]
+        picked[0]["keyword_coverage"] = '{"score": 0.9, "missing_gap": ["Rust"]}'
         saved_dir = config.CLAUDE_DIR
         config.CLAUDE_DIR = tmp / "claude"
         try:
             payload = cq.export_batch(picked, tmp / "export", day="2026-10-26")
+            assert payload["jobs"][0]["keyword_coverage"] == {"score": 0.9, "missing_gap": ["Rust"]}
+            assert payload["jobs"][1]["keyword_coverage"] is None
         finally:
             config.CLAUDE_DIR = saved_dir
         day_dir = tmp / "export" / "2026-10-26"

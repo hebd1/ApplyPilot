@@ -173,6 +173,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "tailored_resume_path": "TEXT",
     "tailored_at": "TEXT",
     "tailor_attempts": "INTEGER DEFAULT 0",
+    "keyword_coverage": "TEXT",  # JSON: job's top skills vs tailored resume (scoring/keywords.py)
     # Cover letter
     "cover_letter_path": "TEXT",
     "cover_letter_at": "TEXT",
