@@ -20,6 +20,7 @@ from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile, title_is_
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.employment import format_employment_for_prompt, normalize_experience_headers
+from applypilot.scoring.playbook import load_playbook, strip_seniority
 from applypilot.scoring.resume_format import assemble_resume_text
 from applypilot.scoring.validator import (
     BANNED_WORDS,
@@ -49,13 +50,39 @@ def _bullet_quota_block(profile: dict) -> str:
             "- Previous role: 3 bullets\n"
             "- Older roles: 1-2 bullets"
         )
-    quotas = [4, 3, 2]
+    playbook = bool(load_playbook())
+    quotas = [5, 4, 1] if playbook else [4, 3, 2]
     lines: list[str] = []
     for i, row in enumerate(history):
         company = row.get("company") or f"Role {i + 1}"
         n = quotas[i] if i < len(quotas) else 1
-        lines.append(f"- {company}: {n} full-sentence bullet(s)")
+        if playbook:
+            lines.append(f"- {company}: up to {n} bullet(s), each from the approved bullet bank")
+        else:
+            lines.append(f"- {company}: {n} full-sentence bullet(s)")
     return "\n".join(lines)
+
+
+def _playbook_title(data: dict) -> dict:
+    """With a playbook, the headline is the role family: no Senior, no level."""
+    if load_playbook() and isinstance(data, dict) and "title" in data:
+        data["title"] = strip_seniority(str(data["title"]))
+    return data
+
+
+_PLAYBOOK_TAILOR_RULES = """
+
+## RESUME PLAYBOOK (Eli approved it; where it conflicts with anything above, the playbook wins)
+- Every experience bullet is one bullet from the APPROVED BULLET BANK below, chosen for this job. You may change verbs and order and use the job's vocabulary for the same fact. Never change numbers, scope or ownership, and never write a bullet that is not in the bank.
+- Bullet length follows the bank: do not pad bullets to a word count.
+- Pick Base A or Base B with the playbook's tailoring rules, and use that base's summary as the starting point.
+- TITLE: the job's role family only (Backend / Platform / Full Stack Software Engineer). Never "Senior", "Staff", "Lead" or a level.
+- SKILLS: only items from the playbook's skills master list, using the job's spelling. Never add a tool that is not on that list. Use the chosen base's skill lines (Base A has no Frontend line). On a Frontend line, Angular comes before React.
+- SUMMARY: tools named next to Equifax/Kount work must appear in that work's bullets or fixed facts (work CI/CD is GitLab CI/CD; GitHub Actions and Jetpack Compose are from the personal Play apps).
+- Respect every BANNED CLAIM. Fixed facts (titles, dates, years, certification wording) are exact.
+
+{playbook}
+"""
 
 
 def _build_tailor_prompt(profile: dict) -> str:
@@ -109,6 +136,21 @@ def _build_tailor_prompt(profile: dict) -> str:
     education = profile.get("experience", {})
     education_level = education.get("education_level", "")
 
+    playbook = load_playbook()
+    if playbook:
+        related_tools_rule = "Use only skills from the playbook's skills master list."
+        title_rule = "TITLE: The job's role family only. No Senior/Staff/Lead or level. Drop company suffixes and team names."
+        bullet_rule = "BULLETS: Use the approved bullet bank (see RESUME PLAYBOOK). Lead each employer with the bullets that match the job's top themes."
+        playbook_block = _PLAYBOOK_TAILOR_RULES.format(playbook=playbook)
+    else:
+        related_tools_rule = ("You MAY add 2-3 closely related tools (Kubernetes if Docker, Terraform if AWS, "
+                              "Redis if PostgreSQL). No unrelated languages/frameworks.")
+        title_rule = "TITLE: Match the target role. Keep seniority (Senior/Lead/Staff). Drop company suffixes and team names."
+        bullet_rule = ("BULLETS: Strong verb + what you built + quantified impact. Every bullet is one full sentence, "
+                       "28-45 words — match the depth of the base resume (not short phrases).")
+        playbook_block = ""
+    additional_example = ", ".join(str(x) for x in resume_facts.get("additional_information", []) or [])
+
     return f"""You are a senior technical recruiter rewriting a resume to get this person an interview.
 
 Take the base resume and job description. Return a tailored resume as a JSON object.
@@ -122,11 +164,11 @@ Take the base resume and job description. Return a tailored resume as a JSON obj
 ## SKILLS BOUNDARY (real skills only):
 {skills_block}
 
-You MAY add 2-3 closely related tools (Kubernetes if Docker, Terraform if AWS, Redis if PostgreSQL). No unrelated languages/frameworks.
+{related_tools_rule}
 
 ## TAILORING RULES:
 
-TITLE: Match the target role. Keep seniority (Senior/Lead/Staff). Drop company suffixes and team names.
+{title_rule}
 
 SUMMARY: Rewrite from scratch. Lead with the 1-2 skills that matter most for THIS role. Sound like someone who's done this job.
 
@@ -139,7 +181,7 @@ WORK-PRODUCT PROJECTS (fold into employer bullets — do not invent a separate w
 PERSONAL PROJECTS (canonical — use a PROJECTS section; reorder by relevance, drop irrelevant ones):
 {personal_projects_block}
 
-BULLETS: Strong verb + what you built + quantified impact. Every bullet is one full sentence, 28-45 words — match the depth of the base resume (not short phrases).
+{bullet_rule}
 
 BULLET COUNTS (from employment_history order — most recent first):
 {_bullet_quota_block(profile)}
@@ -179,7 +221,8 @@ EMPLOYER RULES:
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages & Frameworks":"...","Cloud & Infrastructure":"..."}},"experience":[{{"company":"Equifax","location":"Boise, ID","title":"Software Development Engineer","dates":"June 2025-Present","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"name":"AnyWidget","description":"Android home screen widget app. Built with Kotlin, Firebase, MySQL, and Google Stitch. Over 1k downloads on the Google Play Store."}}],"education":{{"school":"{school}","location":"Salt Lake City, UT","degree":"Bachelor of Science in Computer Science, Minor in Russian","year":"2021","highlights":["highlight 1","highlight 2"]}},"additional_information":"Proficient Russian speaker, Google Play Store application developer, digital artist"}}"""
+{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages & Frameworks":"...","Cloud & Infrastructure":"..."}},"experience":[{{"company":"Equifax","location":"Boise, ID","title":"Software Development Engineer","dates":"June 2025-Present","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"name":"AnyWidget","description":"Android home screen widget app. Built with Kotlin, Firebase, MySQL, and Google Stitch. Over 1k downloads on the Google Play Store."}}],"education":{{"school":"{school}","location":"Salt Lake City, UT","degree":"Bachelor of Science in Computer Science, Minor in Russian","year":"2021","highlights":["highlight 1","highlight 2"]}},"additional_information":"{additional_example}"}}
+{playbook_block}"""
 
 
 def _build_judge_prompt(profile: dict) -> str:
@@ -196,6 +239,27 @@ def _build_judge_prompt(profile: dict) -> str:
 
     real_metrics = resume_facts.get("real_metrics", [])
     metrics_str = ", ".join(real_metrics) if real_metrics else "N/A"
+
+    playbook = load_playbook()
+    if playbook:
+        return f"""You are a resume compliance judge. A tailoring engine rewrote Eli's resume for a specific job, following the Resume Playbook below that Eli approved. Check the tailored resume against the playbook.
+
+You must answer with EXACTLY this format:
+VERDICT: PASS or FAIL
+ISSUES: (list any problems, or "none")
+
+FAIL when any of these is true:
+1. An experience bullet does not trace to a bullet in the APPROVED BULLET BANK (rewording, reordering and the job's vocabulary for the same fact are fine; new facts, scope or ownership are not).
+2. A number, title, company, date, year count or the certification wording differs from the playbook's fixed facts.
+3. A skill appears that is not on the playbook's skills master list.
+4. The headline says Senior, Staff, Lead or a level, or any BANNED CLAIM appears (including React listed before Angular, or a Frontend skills line on a Base A resume).
+4b. The summary ties a tool to Equifax/Kount work that those bullets and fixed facts do not show (e.g. GitHub Actions, which is from the personal Play apps).
+5. Two employers are merged into one heading.
+
+Do not fail for style, tone, ordering, which bullets were chosen, or the summary's wording when its facts are in the playbook.
+
+{playbook}
+"""
 
     return f"""You are a resume quality judge. A tailoring engine rewrote a resume to target a specific job. Your job is to catch LIES, not style changes.
 
@@ -402,6 +466,7 @@ def tailor_resume(
             continue
 
         data = normalize_experience_headers(data, profile)
+        data = _playbook_title(data)
 
         # Layer 1: Validate JSON fields
         validation = validate_json_fields(data, profile, mode=validation_mode)
@@ -452,6 +517,10 @@ def tailor_resume(
                 # In normal mode, only retry on judge failure if there are retries left
                 if validation_mode != "lenient":
                     continue
+            # With a playbook, a judge failure means an unapproved claim: never ship it.
+            if load_playbook():
+                report["status"] = "failed_judge"
+                return tailored, report
             # Accept best attempt on last retry (all modes) or if lenient
             report["status"] = "approved_with_judge_warning"
             return tailored, report

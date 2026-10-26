@@ -15,6 +15,7 @@ from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.employment import format_employment_for_prompt
+from applypilot.scoring.playbook import load_playbook
 from applypilot.scoring.validator import (
     BANNED_WORDS,
     LLM_LEAK_PHRASES,
@@ -89,6 +90,43 @@ def _build_cover_letter_prompt(profile: dict) -> str:
 
     work_auth = profile.get("work_authorization", {})
     auth_note = ""
+    playbook = load_playbook()
+    if playbook:
+        if work_auth.get("legally_authorized_to_work"):
+            auth_note = ("\nIf the job mentions citizenship or sponsorship, one short clause: authorized to work "
+                         "in the US, no sponsorship needed. Never claim clearance or the ability to obtain one.")
+        return f"""Write a short cover letter for {sign_off_name}. Target: interview.
+
+FORMAT (header contact block is added automatically at PDF render):
+
+Subject: [Job Title] – [Company]
+
+Dear [Company] Hiring Team,
+
+[2-3 short paragraphs: why this role and company (from the job description), the 2 approved bullets that best match the job's top themes, and one line on ownership/on-call/mentoring when the job values it.]
+
+Thank you for your time and consideration.
+
+Warm regards,
+{sign_off_name}
+
+LENGTH: 150-200 words between the salutation and the thank-you line.
+
+FACTS: Use only facts from the RESUME PLAYBOOK below (fixed facts, approved bullet bank, skills master list). Respect every banned claim. Never change a number, title, date or year count. Never call {sign_off_name} "Senior".
+
+VOICE: plain and confident, like an engineer writing to another engineer. No em dashes or en dashes in the body.
+
+BANNED WORDS AND PHRASES (validator rejects these):
+{all_banned}
+
+ALSO BANNED (meta-commentary):
+{leak_banned}{auth_note}
+
+Output ONLY the letter from "Subject:" through the sign-off name. No preamble. No notes after the sign-off.
+
+## RESUME PLAYBOOK
+{playbook}"""
+
     if work_auth.get("legally_authorized_to_work"):
         auth_note = (
             f"\nIf relevant to the role, include one sentence on work authorization "

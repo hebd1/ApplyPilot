@@ -16,6 +16,8 @@ The old Cursor path (`daily_apply.sh`, `cursor_apply.py`, CapSolver) is still in
 | Today's queue (Windows) | `C:\Users\elihe\Projects\applypilot\.apply-queue\<YYYY-MM-DD>\queue.json` (gitignored; `CLAUDE_APPLY_EXPORT_DIR`) + one folder per job with `Eli_Hebdon_Resume.pdf` / `Eli_Hebdon_Cover_Letter.pdf`. It sits inside the repo because Claude in Chrome's `file_upload` only reads files in the session's folders. |
 | Queue copy (WSL) | `~/.applypilot/claude/queue-<YYYY-MM-DD>.json` |
 | Hosts it applies on | `src/applypilot/config/sites.yaml`: any apply host except `claude_account_hosts` (Workday, iCIMS, Taleo, SuccessFactors, Oracle, …); `claude_apply_hosts` (Greenhouse, Ashby, Lever, …) go first within a fit score. Set `claude_apply_any_host: false` to allow only the named ATSs. |
+| Resume Playbook (copy) | `.apply-queue\resume_playbook.md`, refreshed from Notion each run. While it exists, tailoring uses only its approved bullet bank and skills list, strips Senior/levels from the headline, rejects judge failures, and writes 150–200-word cover letters (`src/applypilot/scoring/playbook.py`). |
+| Notion | Applications table (`collection://583a8f0e-4cc1-4395-9662-3b4150ab1144`): shared board with Job Hunter (Grok). Check the company, then claim the row (Status In progress, Agent = Claude routine) before filling; status updates. Form-answer rules: the bots page. |
 | Scheduled task prompt | `C:\Users\elihe\.claude\scheduled-tasks\applypilot-daily\SKILL.md` |
 
 Run ApplyPilot commands from Windows through WSL:
@@ -51,6 +53,8 @@ The scheduled task follows this section. Keep it accurate when the code changes.
 
 - Run `~/.claude/skills/mac-session-lock/scripts/session-lock.sh status` in WSL. If the lock is held by `Game mode (Eli)`, stop: reply "Skipped today: Game mode is on." Do not open Chrome tabs while Eli is gaming.
 - Run `applypilot claude pending` and keep the list for the summary.
+- **Refresh the Resume Playbook from Notion** (Job Search / Resume Playbook, page `3fd6b7634ff381278e46e13f68613886`): fetch it and write its content as Markdown to `C:\Users\elihe\Projects\applypilot\.apply-queue\resume_playbook.md` (`RESUME_PLAYBOOK_PATH`). Tailoring, the judge and cover letters follow that file. If Notion is unreachable, keep yesterday's copy and say so in the summary.
+- Read the Notion **bots** page (`3cd6b7634ff380e39c9cf4467039072d`) for form-answer rules. `profile.json` mirrors it (years, EEO, clearance, Go/Node years); when they disagree, the bots page wins and the summary says so.
 
 ### 1. Prep (60–90 min)
 
@@ -74,6 +78,7 @@ Load the Claude in Chrome tools in one ToolSearch call (`tabs_context_mcp, tabs_
 
 For each job in `queue.json`, in rank order:
 
+0. **Notion check, then claim** (shared board with Job Hunter, the Grok bot; rules on the bots page under "Two bots, one board"). Search the Applications data source (`collection://583a8f0e-4cc1-4395-9662-3b4150ab1144`) for the company. A row for the same company and a similar role whose Status is not Skipped is taken (applied, or claimed by Job Hunter or Eli): `mark <url> -s failed --note "duplicate: Notion <row url>"` and move on. An In progress row with no Notes line for 24 h may be taken over with a Notes line. Same company, different role: continue and mention it. Otherwise **create the row now, before opening the form**: Name = job title, Company, Job URL = `url`, ATS URL = `apply_url`, Fit score, Apply type = External, Path = Cold, Status = In progress, **Agent = Claude routine**, Notes = `<YYYY-MM-DD h:mm a MT> (Claude routine): claimed`.
 1. Navigate to `apply_url`. If the posting is closed: `mark <url> -s failed --note closed`.
 2. Location: Remote (US) is fine; hybrid/onsite only in a `location_accept` place. Otherwise `-s failed --note not_eligible_location`.
 3. Sign-in or account creation required: `-s needs_eli --note account_required`. Do not create accounts or type passwords.
@@ -88,6 +93,17 @@ For each job in `queue.json`, in rank order:
 8. CAPTCHA (reCAPTCHA, hCaptcha, Turnstile, puzzles): do not solve or bypass it and do not call CapSolver. Leave the tab open with everything else filled; `-s needs_eli --note captcha`.
 9. Consent/terms checkboxes and acknowledgement dropdowns: leave unset; list them in the summary. They are ticked when Eli approves.
 10. Review the whole form, then `-s filled --note "<one line: what was filled, any judgment calls>"`. Leave the tab open. Do not click Submit.
+11. **Update the claimed row.** Resume version = Full Stack when the resume headline says Full Stack, else Backend/Identity; append Notes `<YYYY-MM-DD h:mm a MT> (Claude routine): <filled | needs Eli: why>; pay <range or not posted>; JD top skills covered: …; missing: …`. Attach the uploaded resume PDF to Resume (and the cover letter to Cover letter when one was used) with the Notion file-upload tool; if that fails, put the local path in Notes. A claimed job that turns out closed or location-ineligible: Status = Skipped with the reason.
+
+### Notion status updates
+
+| ApplyPilot | Notion Status | Also set |
+|------------|---------------|----------|
+| `filled`, `needs_eli` | In progress | Notes line |
+| `applied` | Applied | Applied = today; Notes line with the confirmation text |
+| `declined` | Skipped | Notes line with Eli's reason |
+
+Keep Notes append-only: add a dated line, never rewrite earlier ones.
 
 ### 4. Summary
 
@@ -97,11 +113,12 @@ Reply with (and send a push notification when the tool is available):
 - **Needs you** — CAPTCHA / account / question jobs with the open tab or link and what is left.
 - **Skipped** — closed, location, form errors.
 - **Still waiting from earlier days** — from `applypilot claude pending`.
+- Links to the Notion rows created or updated today.
 - Last line: `Reply "submit all", "submit 1,3" or "skip 2".`
 
 ### 5. When Eli replies
 
-For each approved job: switch to its tab (re-fill from `queue.json` if the tab was closed or the form reset), tick the consent boxes, click Submit, confirm the confirmation page or message, then `-s applied --note "<confirmation text>"`. For each skipped job: `-s declined`. Report what was submitted.
+For each approved job: switch to its tab (re-fill from `queue.json` if the tab was closed or the form reset), tick the consent boxes, click Submit, confirm the confirmation page or message, then `-s applied --note "<confirmation text>"` and set its Notion row to Applied (Applied = today). For each skipped job: `-s declined` and Notion Status Skipped. Report what was submitted with the Notion row links.
 
 ## Limits
 

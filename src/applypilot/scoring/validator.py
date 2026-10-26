@@ -410,7 +410,14 @@ def validate_cover_letter(text: str, mode: str = "normal") -> dict:
 
     # 3. Word count — professional letters are longer than the old 250-word cap
     words = len(text.split())
-    if mode == "strict" and words < 300:
+    from applypilot.scoring.playbook import load_playbook
+    if load_playbook():
+        # Eli's Resume Playbook: 150-200 words (body; salutation/sign-off add a few).
+        if mode == "strict" and not 130 <= words <= 260:
+            errors.append(f"{words} words. Target 150-200.")
+        elif mode == "normal" and not 120 <= words <= 300:
+            warnings.append(f"{words} words. Target 150-200.")
+    elif mode == "strict" and words < 300:
         errors.append(f"Too short ({words} words). Target 350-500.")
     elif mode == "strict" and words > 550:
         errors.append(f"Too long ({words} words). Max 550.")

@@ -29,7 +29,13 @@ def normalize_section_name(name: str) -> str:
 
 
 def format_contact_line(profile: dict) -> str:
-    """Location • email • phone on one line (matches ELI_HEBDON_RESUME_2026)."""
+    """Location • email • phone on one line (matches ELI_HEBDON_RESUME_2026).
+
+    ``resume_facts.contact_line`` (the playbook's fixed line) wins when set.
+    """
+    fixed = (profile.get("resume_facts", {}) or {}).get("contact_line", "")
+    if fixed:
+        return str(fixed).strip()
     personal = profile.get("personal", {})
     city = personal.get("city", "").strip()
     state = personal.get("province_state", "").strip()
