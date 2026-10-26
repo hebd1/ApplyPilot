@@ -2,6 +2,8 @@
 Unified LLM client for ApplyPilot.
 
 Auto-detects provider from environment:
+  LLM_PROVIDER=claude -> Claude Code CLI (`claude -p`, subscription auth;
+                         CLAUDE_LLM_MODEL, default: sonnet). Takes priority.
   CURSOR_API_KEY     -> Cursor Auto mode (default: auto)
   OPENROUTER_API_KEY -> OpenRouter free-tier models (default: openrouter/free)
   GEMINI_API_KEY     -> Google Gemini (default: gemini-2.0-flash)
@@ -15,6 +17,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -28,6 +33,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CURSOR_PROVIDER = "cursor"
+_CLAUDE_CLI_PROVIDER = "claude-cli"
 
 _OUTPUT_WRAPPER = (
     "You are a text-generation assistant. Output ONLY the requested content. "
@@ -47,6 +53,15 @@ def _detect_provider() -> tuple[str, str, str]:
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
+
+    # Explicit opt-in: Claude Code CLI on the user's subscription. Uses its own
+    # model variable so a leftover LLM_MODEL (e.g. "auto") does not leak in.
+    if os.environ.get("LLM_PROVIDER", "").strip().lower() in ("claude", "claude-cli"):
+        return (
+            _CLAUDE_CLI_PROVIDER,
+            os.environ.get("CLAUDE_LLM_MODEL", "").strip() or "sonnet",
+            "",
+        )
 
     # If the model looks like an OpenRouter model (contains "/" like "openrouter/free"
     # or "qwen/qwen3.7-flash"), prefer OpenRouter even if CURSOR_API_KEY is set.
@@ -130,6 +145,75 @@ def _cursor_retry_wait(exc: Exception, attempt: int) -> float:
 
 
 _cursor_semaphore: threading.Semaphore | None = None
+_claude_semaphore: threading.Semaphore | None = None
+
+
+class ClaudeCLIError(RuntimeError):
+    """`claude -p` exited non-zero or timed out."""
+
+    def __init__(self, message: str, *, is_retryable: bool) -> None:
+        super().__init__(message)
+        self.is_retryable = is_retryable
+
+
+_CLAUDE_RETRYABLE_MARKERS = ("rate limit", "rate_limit", "overloaded", "529", "429", "timed out", "econnreset")
+
+
+def _get_claude_semaphore() -> threading.Semaphore:
+    global _claude_semaphore
+    if _claude_semaphore is None:
+        limit = int(os.environ.get("CLAUDE_MAX_CONCURRENCY", "2"))
+        _claude_semaphore = threading.Semaphore(max(1, limit))
+    return _claude_semaphore
+
+
+def claude_cli_path() -> str | None:
+    """Locate `claude`: CLAUDE_CLI_PATH, PATH, then ~/.local/bin (absent from non-login PATHs)."""
+    explicit = os.environ.get("CLAUDE_CLI_PATH")
+    if explicit:
+        return explicit
+    found = shutil.which("claude")
+    if found:
+        return found
+    local = os.path.expanduser("~/.local/bin/claude")
+    return local if os.path.isfile(local) else None
+
+
+def build_claude_cli_command(model: str, system_prompt: str) -> list[str]:
+    """argv for a tool-less, settings-less, non-persisted `claude -p` call.
+
+    `--setting-sources ""` skips user/project settings (and with them any
+    hooks), `--tools ""` makes it pure text generation, and
+    `--strict-mcp-config` keeps MCP servers out. `--bare` is not used: it
+    ignores OAuth, and this provider runs on the user's subscription login.
+    """
+    exe = claude_cli_path() or "claude"
+    return [
+        exe, "-p",
+        "--model", model,
+        "--output-format", "text",
+        "--tools", "",
+        "--setting-sources", "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--system-prompt", system_prompt,
+    ]
+
+
+def split_system_prompt(messages: list[dict]) -> tuple[str, str]:
+    """Return (system_prompt, user_prompt) for the Claude CLI.
+
+    System messages become the CLI system prompt (prefixed with the
+    output-only wrapper); everything else is flattened into stdin.
+    """
+    system = [m.get("content", "") for m in messages if m["role"] == "system"]
+    rest = [m for m in messages if m["role"] != "system"]
+    system_prompt = _OUTPUT_WRAPPER + "\n\n".join(system)
+    if len(rest) == 1 and rest[0]["role"] == "user":
+        user_prompt = rest[0].get("content", "")
+    else:
+        user_prompt = _flatten_messages(rest)
+    return system_prompt.strip(), user_prompt
 
 
 def _get_cursor_semaphore() -> threading.Semaphore:
@@ -174,6 +258,48 @@ class LLMClient:
         self._use_native_gemini: bool = False
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
         self._is_cursor: bool = base_url == _CURSOR_PROVIDER
+        self._is_claude_cli: bool = base_url == _CLAUDE_CLI_PROVIDER
+
+    # -- Claude Code CLI ----------------------------------------------------
+
+    def _chat_claude_cli(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Call `claude -p` (Claude Code CLI, subscription auth).
+
+        The CLI has no temperature / max-token flags; length limits are
+        stated in the prompt the same way the Cursor path does it.
+        """
+        system_prompt, user_prompt = split_system_prompt(messages)
+        if max_tokens != 4096:
+            user_prompt += f"\n\n(Keep the response under about {max_tokens} tokens.)"
+
+        timeout = int(os.environ.get("CLAUDE_CLI_TIMEOUT", "300"))
+        env = dict(os.environ)
+        env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
+        with _get_claude_semaphore(), tempfile.TemporaryDirectory(prefix="applypilot-llm-") as cwd:
+            try:
+                proc = subprocess.run(
+                    build_claude_cli_command(self.model, system_prompt),
+                    input=user_prompt,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=timeout,
+                    cwd=cwd,
+                    env=env,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ClaudeCLIError(f"claude -p timed out after {timeout}s", is_retryable=True) from exc
+
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()[-500:]
+            retryable = any(m in detail.lower() for m in _CLAUDE_RETRYABLE_MARKERS)
+            raise ClaudeCLIError(f"claude -p exited {proc.returncode}: {detail}", is_retryable=retryable)
+        return proc.stdout.strip()
 
     # -- Cursor Auto API ----------------------------------------------------
 
@@ -321,6 +447,9 @@ class LLMClient:
 
         for attempt in range(_MAX_RETRIES):
             try:
+                if self._is_claude_cli:
+                    return self._chat_claude_cli(messages, temperature, max_tokens)
+
                 if self._is_cursor:
                     return self._chat_cursor(messages, temperature, max_tokens)
 
@@ -371,6 +500,15 @@ class LLMClient:
                         "or switching to a local model.",
                         resp.status_code, wait, attempt + 1, _MAX_RETRIES,
                     )
+                    time.sleep(wait)
+                    continue
+                raise
+
+            except ClaudeCLIError as exc:
+                if exc.is_retryable and attempt < _MAX_RETRIES - 1:
+                    wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
+                    log.warning("Claude CLI call failed (%s). Retrying in %ds (%d/%d).",
+                                exc, wait, attempt + 1, _MAX_RETRIES)
                     time.sleep(wait)
                     continue
                 raise
@@ -432,7 +570,10 @@ def get_client() -> LLMClient:
     global _instance
     if _instance is None:
         base_url, model, api_key = _detect_provider()
-        provider_label = "Cursor Auto" if base_url == _CURSOR_PROVIDER else base_url
+        provider_label = {
+            _CURSOR_PROVIDER: "Cursor Auto",
+            _CLAUDE_CLI_PROVIDER: "Claude Code CLI",
+        }.get(base_url, base_url)
         log.info("LLM provider: %s  model: %s", provider_label, model)
         _instance = LLMClient(base_url, model, api_key)
     return _instance

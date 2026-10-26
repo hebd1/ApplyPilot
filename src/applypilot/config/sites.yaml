@@ -36,6 +36,35 @@ preferred_ats_hosts:
   - "myworkdayjobs.com"
   - "ashbyhq.com"
 
+# Daily Claude in Chrome routine. The browser agent does not create accounts
+# or type passwords, and a CAPTCHA hands the job to Eli with the form filled.
+# claude_apply_any_host: true -> any apply host except claude_account_hosts
+# (company career pages included; sign-in walls come back as needs_eli).
+# false -> only claude_apply_hosts.
+claude_apply_any_host: true
+claude_account_hosts:
+  - "myworkdayjobs.com"
+  - "myworkdaysite.com"
+  - "icims.com"
+  - "taleo.net"
+  - "successfactors.com"
+  - "successfactors.eu"
+  - "oraclecloud.com"
+  - "brassring.com"
+  - "ultipro.com"
+  - "recruiting.adp.com"
+  - "workforcenow.adp.com"
+# Named ATS hosts, tried first within the same fit score (priority order).
+claude_apply_hosts:
+  - "greenhouse.io"
+  - "grnh.se"
+  - "ashbyhq.com"
+  - "lever.co"
+  - "smartrecruiters.com"
+  - "apply.workable.com"
+  - "jobs.jobvite.com"
+  - "bamboohr.com"
+
 # ── Blocked sites — too problematic for automation ───────────────────────
 blocked:
   sites:

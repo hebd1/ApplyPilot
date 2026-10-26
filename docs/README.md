@@ -8,6 +8,8 @@
 
 | [AGENTS.md](../AGENTS.md) | AI coding agents | Project context, architecture, PDF/dashboard, reset workflow, pitfalls |
 
+| [claude-routine.md](claude-routine.md) | Operators / agents | Daily Claude routine: prep, queue, Claude in Chrome fill, approval |
+
 | [cursor-llm.md](cursor-llm.md) | Developers / agents | Cursor Auto provider design, config, testing |
 
 | [auto-apply.md](auto-apply.md) | Developers / users | Stage 6 Cursor apply, Gmail OTP (read-only; send/mutate only with consent), dry-run |

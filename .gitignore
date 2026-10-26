@@ -62,3 +62,6 @@ Eli_Hebdon_*.pdf
 # Temp smoke scripts
 scripts/_smoke_*.py
 scripts/_tmp_*.py
+
+# Claude routine daily export (tailored PDFs + queue.json)
+.apply-queue/

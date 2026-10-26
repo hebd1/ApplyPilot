@@ -20,6 +20,7 @@ ENV_PATH = APP_DIR / ".env"
 TAILORED_DIR = APP_DIR / "tailored_resumes"
 COVER_LETTER_DIR = APP_DIR / "cover_letters"
 LOG_DIR = APP_DIR / "logs"
+CLAUDE_DIR = APP_DIR / "claude"  # Claude in Chrome routine: daily queue JSON + evidence
 
 # Chrome worker isolation
 CHROME_WORKER_DIR = APP_DIR / "chrome-workers"
@@ -196,6 +197,36 @@ def load_preferred_ats_hosts() -> list[str]:
     return [h for h in (str(x).strip().lower() for x in raw) if h and h not in skip]
 
 
+def load_claude_apply_hosts() -> list[str]:
+    """ATS hosts the Claude in Chrome routine applies on, in priority order.
+
+    Hosts that need an account sign-up (Workday, iCIMS, Taleo) are left out:
+    the browser agent does not create accounts or type passwords.
+    """
+    cfg = load_sites_config()
+    raw = cfg.get("claude_apply_hosts") or [
+        "greenhouse.io", "grnh.se", "ashbyhq.com", "lever.co",
+    ]
+    if not isinstance(raw, list):
+        return []
+    return [h for h in (str(x).strip().lower() for x in raw) if h]
+
+
+def load_claude_account_hosts() -> list[str] | None:
+    """Account-gated hosts the Claude routine never picks.
+
+    Returns None when ``claude_apply_any_host`` is false: then only
+    ``claude_apply_hosts`` qualify.
+    """
+    cfg = load_sites_config()
+    if not cfg.get("claude_apply_any_host", True):
+        return None
+    raw = cfg.get("claude_account_hosts") or ["myworkdayjobs.com", "myworkdaysite.com", "icims.com", "taleo.net"]
+    if not isinstance(raw, list):
+        return []
+    return [h for h in (str(x).strip().lower() for x in raw) if h]
+
+
 def preferred_ats_rank(url: str | None) -> int:
     """Lower rank = higher Stage 6 priority. Unknown hosts rank after preferred list."""
     if not url:
@@ -338,7 +369,7 @@ def get_tier() -> int:
     load_env()
 
     has_llm = any(os.environ.get(k) for k in (
-        "CURSOR_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL",
+        "LLM_PROVIDER", "CURSOR_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL",
     ))
     if not has_llm:
         return 1
@@ -372,7 +403,7 @@ def check_tier(required: int, feature: str) -> None:
 
     missing: list[str] = []
     if required >= 2 and not any(os.environ.get(k) for k in (
-        "CURSOR_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL",
+        "LLM_PROVIDER", "CURSOR_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL",
     )):
         missing.append("LLM API key — run [bold]applypilot init[/bold] or set CURSOR_API_KEY")
     if required >= 3:

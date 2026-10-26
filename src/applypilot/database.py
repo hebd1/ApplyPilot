@@ -187,6 +187,9 @@ _ALL_COLUMNS: dict[str, str] = {
     "apply_duration_ms": "INTEGER",
     "apply_task_id": "TEXT",
     "verification_confidence": "TEXT",
+    # Claude in Chrome routine: what the agent did / where its screenshot is
+    "apply_notes": "TEXT",
+    "apply_evidence": "TEXT",
     # Post-apply email outcome tracking (Gmail readonly poll)
     "outcome": "TEXT",
     "outcome_at": "TEXT",

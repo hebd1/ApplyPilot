@@ -1,6 +1,8 @@
 # Operations — daily apply and health
 
-This checkout applies **one** high-quality ATS job each weekday morning (08:00 America/Denver) via Windows Task Scheduler + `scripts/daily_apply.sh`. Stage 6 needs the local SQLite DB, Chrome, CapSolver, and a live Gmail readonly token — it cannot run as a Cursor cloud Automation.
+> **2026-10-26:** the daily run is now the Claude routine in [claude-routine.md](claude-routine.md). This page describes the older Cursor `daily_apply.sh` flow, which nothing schedules anymore.
+
+This checkout applied **one** high-quality ATS job each weekday morning (08:00 America/Denver) via Windows Task Scheduler + `scripts/daily_apply.sh`. Stage 6 needs the local SQLite DB, Chrome, CapSolver, and a live Gmail readonly token — it cannot run as a Cursor cloud Automation.
 
 ## Is it running?
 

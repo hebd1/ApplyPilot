@@ -259,6 +259,82 @@ def apply(
     )
 
 
+# ---------------------------------------------------------------------------
+# Claude in Chrome routine (Stage 6 via a Claude desktop scheduled task)
+# ---------------------------------------------------------------------------
+
+claude_app = typer.Typer(help="Queue and results for the daily Claude in Chrome apply routine.")
+app.add_typer(claude_app, name="claude")
+
+
+@claude_app.command("queue")
+def claude_queue_cmd(
+    count: int = typer.Option(3, "--count", "-n", help="Jobs to pick (one per employer)."),
+    min_score: int = typer.Option(8, "--min-score", help="Minimum fit score."),
+    include_workday: bool = typer.Option(False, "--include-workday", help="Also pick Workday (account sign-in needed)."),
+    no_expiry_check: bool = typer.Option(False, "--no-expiry-check", help="Skip the closed-posting HTTP check."),
+    as_json: bool = typer.Option(False, "--json", help="Print the full queue JSON to stdout."),
+) -> None:
+    """Pick today's best jobs and export their PDFs for Chrome upload."""
+    _bootstrap()
+    import json as _json
+    from applypilot.apply import claude_queue as cq
+
+    jobs = cq.pick_batch(count, min_score, include_workday=include_workday,
+                         check_expiry=not no_expiry_check)
+    payload = cq.export_batch(jobs)
+    if as_json:
+        print(_json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+    console.print(f"[bold]Queued {len(jobs)} job(s)[/bold] -> {payload['export_dir']}\\queue.json")
+    for item in payload["jobs"]:
+        console.print(f"  {item['rank']}. [{item['fit_score']}] {item['title']} @ {item['company']}  {item['apply_url']}")
+
+
+@claude_app.command("mark")
+def claude_mark_cmd(
+    url: str = typer.Argument(..., help="Job URL or apply URL from the queue."),
+    status_: str = typer.Option(..., "--status", "-s", help="filled | applied | needs_eli | failed | declined | release"),
+    note: str = typer.Option("", "--note", help="What happened (reason for needs_eli / failed)."),
+    evidence: str = typer.Option("", "--evidence", help="Screenshot or file path proving the result."),
+) -> None:
+    """Record what the browser routine did with a job."""
+    _bootstrap()
+    from applypilot.apply import claude_queue as cq
+
+    try:
+        n = cq.mark(url, status_, note=note, evidence=evidence)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2)
+    if n == 0:
+        console.print(f"[red]No job matches {url}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]{status_}[/green] {url}")
+
+
+@claude_app.command("pending")
+def claude_pending_cmd(
+    days: int = typer.Option(7, "--days", help="Look back this many days."),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+) -> None:
+    """Jobs waiting on Eli: filled and awaiting approval, or needs a human step."""
+    _bootstrap()
+    import json as _json
+    from applypilot.apply import claude_queue as cq
+
+    rows = cq.pending(days)
+    if as_json:
+        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return
+    if not rows:
+        console.print("Nothing waiting on you.")
+        return
+    for r in rows:
+        why = r["apply_notes"] or r["apply_error"] or ""
+        console.print(f"  [{r['apply_status']}] {r['title']} @ {r['company'] or r['site']}  {r['application_url']}  {why}")
+
+
 @app.command()
 def status() -> None:
     """Show pipeline statistics from the database."""
@@ -516,7 +592,15 @@ def doctor() -> None:
     has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
     has_local = bool(os.environ.get("LLM_URL"))
-    if has_cursor:
+    has_claude = os.environ.get("LLM_PROVIDER", "").strip().lower() in ("claude", "claude-cli")
+    if has_claude:
+        from applypilot.llm import claude_cli_path
+        model = os.environ.get("CLAUDE_LLM_MODEL", "sonnet")
+        if claude_cli_path():
+            results.append(("LLM provider", ok_mark, f"Claude Code CLI ({model})"))
+        else:
+            results.append(("LLM provider", fail_mark, "LLM_PROVIDER=claude but `claude` is not on PATH"))
+    elif has_cursor:
         model = os.environ.get("LLM_MODEL", "auto")
         results.append(("LLM API key", ok_mark, f"Cursor Auto ({model})"))
     elif has_openrouter:

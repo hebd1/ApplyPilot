@@ -24,7 +24,7 @@ ApplyPilot is a Python CLI that runs a 6-stage job-application pipeline:
 
 5. **Cover** — LLM writes cover letters → **styled PDF**
 
-6. **Apply** — Cursor SDK submits applications in a browser
+6. **Apply** — the daily Claude routine fills applications in Eli's Chrome (Claude in Chrome) and submits after his approval ([docs/claude-routine.md](docs/claude-routine.md)). The older Cursor SDK path is still in `apply/` but nothing schedules it.
 
 
 
@@ -87,6 +87,8 @@ All pipeline LLM calls go through `get_client()` in [`src/applypilot/llm.py`](sr
 Provider priority in `_detect_provider()`:
 
 
+
+0. `LLM_PROVIDER=claude` → Claude Code CLI (`claude -p`, subscription login; `CLAUDE_LLM_MODEL`, default `sonnet`). This is the live setting on Phobos.
 
 1. `CURSOR_API_KEY` → Cursor Auto
 
@@ -274,7 +276,11 @@ Package is installed editable: `pip install -e .` (from WSL).
 .venv/bin/applypilot apply --headless -l 1 -w 1
 # See docs/auto-apply.md
 
-# Daily scheduled apply (08:00 Mountain — 1 quality ATS apply + Gmail outcome poll)
+# Daily Claude routine (07:00, Claude desktop scheduled task `applypilot-daily`): see docs/claude-routine.md
+bash scripts/claude_daily_prep.sh            # discover/score/tailor + pick today's queue
+.venv/bin/applypilot claude queue|mark|pending
+
+# Old Cursor daily apply (no longer scheduled)
 # Scores at most DAILY_APPLY_SCORE_LIMIT (default 8) before tailor/cover/pdf.
 powershell -ExecutionPolicy Bypass -File scripts/install_daily_apply_windows_task.ps1
 bash scripts/install_daily_apply_cron.sh
@@ -520,7 +526,8 @@ PDF generation via Playwright adds ~2–4s per document after Playwright deps ar
 
 
 
-- [docs/ops.md](docs/ops.md) — Daily apply runbook, health checks, recent ops notes
+- [docs/claude-routine.md](docs/claude-routine.md) — Daily Claude routine: prep, queue, Claude in Chrome fill, approval, statuses
+- [docs/ops.md](docs/ops.md) — Old Cursor daily-apply runbook, health checks, recent ops notes
 
 - [docs/auto-apply.md](docs/auto-apply.md) — Stage 6 Cursor apply; Gmail read-only OTP; never send/update/delete/settings without consent
 
