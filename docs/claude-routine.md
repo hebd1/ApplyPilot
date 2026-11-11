@@ -1,8 +1,8 @@
 # Daily Claude routine — find jobs, fill applications in Chrome
 
-A Claude desktop scheduled task on Phobos (`applypilot-daily`, 07:00 daily) replaces the Cursor Stage 6 agent. It:
+A claude.ai routine, **ApplyPilot: daily job applications** (`trig_01TW7BK5xT5j9KZ1sAu3VbU8`, 7:05 AM Mountain daily, push notification when it finishes), runs on the Windows-side Claude desktop bridge on Phobos. There, Claude in Chrome reaches Phobos Chrome and shell commands run without permission prompts. It replaces the Cursor Stage 6 agent. It:
 
-1. Runs `scripts/claude_daily_prep.sh` in WSL: discover → enrich → score (newest 40) → tailor / cover / PDF for score ≥ 8, all through `claude -p` (`LLM_PROVIDER=claude`), then `applypilot claude queue` picks the best 3 jobs (one per employer).
+1. Runs `scripts/claude_daily_prep.sh` in WSL: discover (company ATS boards first, then LinkedIn/Indeed) → enrich → score (newest 40) → tailor / cover / PDF for score ≥ 8, all through `claude -p` (`LLM_PROVIDER=claude`), then `applypilot claude queue` picks the best 3 jobs (one per employer).
 2. Fills each application in Eli's Chrome with Claude in Chrome, uploading the tailored resume, and **stops before Submit**.
 3. Sends Eli a summary. Eli replies in that run's session (`submit all`, `submit 1,3`, `skip 2`); the routine then submits the approved ones and records the results.
 
@@ -20,7 +20,8 @@ The old Cursor path (`daily_apply.sh`, `cursor_apply.py`, CapSolver) is still in
 | ATS keyword coverage | Tailoring asks the model for the job's top 10 hard skills (`jd_top_skills`), matches them against the resume (`scoring/keywords.py`, alias- and word-boundary-aware), retries when a skill Eli has is missing, and stores the result in `jobs.keyword_coverage` and `queue.json`. |
 | Interview Story Bank | Notion page `4056b7634ff381d1be5fcf090c1bedab` under Job Search: STAR stories from approved facts, mapped to common questions. |
 | Notion | Applications table (`collection://583a8f0e-4cc1-4395-9662-3b4150ab1144`): shared board with Job Hunter (Grok). Check the company, then claim the row (Status In progress, Agent = Claude routine) before filling; status updates. Form-answer rules: the bots page. |
-| Scheduled task prompt | `C:\Users\elihe\.claude\scheduled-tasks\applypilot-daily\SKILL.md` |
+| Company ATS boards | `src/applypilot/config/ats_boards.yaml`: \~100 identity, security, fintech and dev-infra companies fetched from the public Greenhouse / Ashby / Lever APIs (`discovery/ats_boards.py`). Postings arrive with the real apply link and full description. Filters: software/backend titles, US remote or an accepted place, posted within `ATS_MAX_AGE_DAYS` (3). Add a company with `{company, ats, slug, focus}`. |
+| Routine | claude.ai routine `trig_01TW7BK5xT5j9KZ1sAu3VbU8` on the environment "Phobos:C:\Users\elihe\Projects" (the desktop app's bridge). The old desktop scheduled task `applypilot-daily` is paused: every run from Oct 27 to Nov 11 stalled on its first permission prompt. The WSL bridge (`Phobos:Projects`) has no Claude in Chrome, so the routine cannot run there. |
 
 Run ApplyPilot commands from Windows through WSL:
 
@@ -49,7 +50,7 @@ NULL ─queue→ claude_queued ─fill→ claude_filled ─Eli approves→ appli
 
 ## Routine procedure
 
-The scheduled task follows this section. Keep it accurate when the code changes.
+The routine follows this section. Keep it accurate when the code changes.
 
 ### 0. Preflight
 
@@ -127,4 +128,4 @@ For each approved job: switch to its tab (re-fill from `queue.json` if the tab w
 - **No account creation, no passwords, no CAPTCHA solving.** Those jobs come back as `needs_eli` with the form filled.
 - **Nothing is submitted without Eli's approval in that run's chat.**
 - Workday is excluded by default (every tenant needs an account). `--include-workday` adds it for days Eli signs in to a tenant first.
-- Scheduled tasks run while the Claude desktop app is open; a missed run starts on the next launch.
+- The routine needs the Claude desktop app running on Phobos (it serves the Windows bridge). If the bridge comes back as a new environment after an outage, runs fail with ENVIRONMENT_UNAVAILABLE: repoint the routine to the new `Phobos:C:\Users\elihe\Projects` environment, the same fix as the WSL routines.

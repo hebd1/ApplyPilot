@@ -276,7 +276,7 @@ Package is installed editable: `pip install -e .` (from WSL).
 .venv/bin/applypilot apply --headless -l 1 -w 1
 # See docs/auto-apply.md
 
-# Daily Claude routine (07:00, Claude desktop scheduled task `applypilot-daily`): see docs/claude-routine.md
+# Daily Claude routine (7:05 AM MT claude.ai routine trig_01TW7BK5xT5j9KZ1sAu3VbU8 on the Windows bridge): see docs/claude-routine.md
 bash scripts/claude_daily_prep.sh            # discover/score/tailor + pick today's queue
 .venv/bin/applypilot claude queue|mark|pending
 
