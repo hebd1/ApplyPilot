@@ -10,7 +10,7 @@
 #
 # Env knobs: CLAUDE_PREP_DISCOVER (1), CLAUDE_PREP_SCORE_LIMIT (40),
 # CLAUDE_APPLY_MIN_SCORE (8), CLAUDE_APPLY_COUNT (3), CLAUDE_PREP_DISCOVER_MIN (50),
-# CLAUDE_PREP_ENRICH_MIN (30).
+# CLAUDE_PREP_ENRICH_MIN (30), CLAUDE_PREP_LOCK_WAIT_MIN (45).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,10 +45,13 @@ held_lock=0
 release() { [[ "$held_lock" == "1" ]] && "$LOCK" release --owner "$OWNER" --no-cleanup >/dev/null 2>&1; }
 trap release EXIT
 
-if [[ -x "$LOCK" ]] && "$LOCK" claim --owner "$OWNER" --task "applypilot: daily discover/score/tailor"; then
+# Another session's build or emulator run usually ends within the hour; wait for it
+# instead of skipping a day's discovery.
+if [[ -x "$LOCK" ]] && "$LOCK" claim --owner "$OWNER" --task "applypilot: daily discover/score/tailor" \
+     --wait-min "${CLAUDE_PREP_LOCK_WAIT_MIN:-45}"; then
   held_lock=1
 else
-  echo "WARN: session lock not available (machine busy or Game mode); skipping discover/score/tailor."
+  echo "WARN: session lock not available after ${CLAUDE_PREP_LOCK_WAIT_MIN:-45} min (machine busy or Game mode); skipping discover/score/tailor."
   echo "      Building the queue from jobs that are already tailored."
 fi
 
