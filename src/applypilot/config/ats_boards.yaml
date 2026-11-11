@@ -1,0 +1,105 @@
+# Company job boards fetched directly from their public ATS APIs (discovery/ats_boards.py).
+# Each posting arrives with its real apply link and full description. Slugs verified 2026-11-11.
+# focus: identity | security | fintech | devinfra (ranking hint for humans; all boards are fetched).
+
+boards:
+  - {company: "Airtable", ats: greenhouse, slug: airtable, focus: devinfra}
+  - {company: "Anthropic", ats: greenhouse, slug: anthropic, focus: devinfra}
+  - {company: "Attentive", ats: greenhouse, slug: attentive, focus: devinfra}
+  - {company: "Cockroach Labs", ats: greenhouse, slug: cockroachlabs, focus: devinfra}
+  - {company: "Cribl", ats: greenhouse, slug: cribl, focus: devinfra}
+  - {company: "Databricks", ats: greenhouse, slug: databricks, focus: devinfra}
+  - {company: "Datadog", ats: greenhouse, slug: datadog, focus: devinfra}
+  - {company: "Discord", ats: greenhouse, slug: discord, focus: devinfra}
+  - {company: "Dropbox", ats: greenhouse, slug: dropbox, focus: devinfra}
+  - {company: "Elastic", ats: greenhouse, slug: elastic, focus: devinfra}
+  - {company: "Fastly", ats: greenhouse, slug: fastly, focus: devinfra}
+  - {company: "Figma", ats: greenhouse, slug: figma, focus: devinfra}
+  - {company: "Gitlab", ats: greenhouse, slug: gitlab, focus: devinfra}
+  - {company: "Grafana Labs", ats: greenhouse, slug: grafanalabs, focus: devinfra}
+  - {company: "Honeycomb", ats: greenhouse, slug: honeycomb, focus: devinfra}
+  - {company: "Instacart", ats: greenhouse, slug: instacart, focus: devinfra}
+  - {company: "LaunchDarkly", ats: greenhouse, slug: launchdarkly, focus: devinfra}
+  - {company: "Linear", ats: ashby, slug: linear, focus: devinfra}
+  - {company: "Lumos", ats: ashby, slug: lumos, focus: devinfra}
+  - {company: "Netlify", ats: greenhouse, slug: netlify, focus: devinfra}
+  - {company: "Notion", ats: ashby, slug: notion, focus: devinfra}
+  - {company: "OpenAI", ats: ashby, slug: openai, focus: devinfra}
+  - {company: "PagerDuty", ats: greenhouse, slug: pagerduty, focus: devinfra}
+  - {company: "Palantir", ats: lever, slug: palantir, focus: devinfra}
+  - {company: "PlanetScale", ats: greenhouse, slug: planetscale, focus: devinfra}
+  - {company: "Reddit", ats: greenhouse, slug: reddit, focus: devinfra}
+  - {company: "Roadie", ats: greenhouse, slug: roadie, focus: devinfra}
+  - {company: "Rubrik", ats: greenhouse, slug: rubrik, focus: devinfra}
+  - {company: "Samsara", ats: greenhouse, slug: samsara, focus: devinfra}
+  - {company: "Spotify", ats: lever, slug: spotify, focus: devinfra}
+  - {company: "Sumo Logic", ats: greenhouse, slug: sumologic, focus: devinfra}
+  - {company: "Supabase", ats: ashby, slug: supabase, focus: devinfra}
+  - {company: "Twilio", ats: greenhouse, slug: twilio, focus: devinfra}
+  - {company: "Vercel", ats: greenhouse, slug: vercel, focus: devinfra}
+  - {company: "Whoop", ats: ashby, slug: whoop, focus: devinfra}
+  - {company: "Affirm", ats: greenhouse, slug: affirm, focus: fintech}
+  - {company: "Alpaca", ats: greenhouse, slug: alpaca, focus: fintech}
+  - {company: "Anchorage", ats: lever, slug: anchorage, focus: fintech}
+  - {company: "Brex", ats: greenhouse, slug: brex, focus: fintech}
+  - {company: "Carta", ats: greenhouse, slug: carta, focus: fintech}
+  - {company: "Checkr", ats: greenhouse, slug: checkr, focus: fintech}
+  - {company: "Chime", ats: greenhouse, slug: chime, focus: fintech}
+  - {company: "Circle", ats: ashby, slug: circle, focus: fintech}
+  - {company: "Coinbase", ats: greenhouse, slug: coinbase, focus: fintech}
+  - {company: "Column", ats: ashby, slug: column, focus: fintech}
+  - {company: "Fireblocks", ats: greenhouse, slug: fireblocks, focus: fintech}
+  - {company: "Galileo", ats: greenhouse, slug: galileo, focus: fintech}
+  - {company: "Gemini", ats: greenhouse, slug: gemini, focus: fintech}
+  - {company: "Gusto", ats: greenhouse, slug: gusto, focus: fintech}
+  - {company: "Highnote", ats: greenhouse, slug: highnote, focus: fintech}
+  - {company: "Lithic", ats: greenhouse, slug: lithic, focus: fintech}
+  - {company: "Mercury", ats: greenhouse, slug: mercury, focus: fintech}
+  - {company: "Modern Treasury", ats: ashby, slug: moderntreasury, focus: fintech}
+  - {company: "Paxos", ats: ashby, slug: paxos, focus: fintech}
+  - {company: "Plaid", ats: ashby, slug: plaid, focus: fintech}
+  - {company: "Ramp", ats: ashby, slug: ramp, focus: fintech}
+  - {company: "Robinhood", ats: greenhouse, slug: robinhood, focus: fintech}
+  - {company: "SoFi", ats: greenhouse, slug: sofi, focus: fintech}
+  - {company: "Stripe", ats: greenhouse, slug: stripe, focus: fintech}
+  - {company: "Synctera", ats: ashby, slug: synctera, focus: fintech}
+  - {company: "Treasury Prime", ats: greenhouse, slug: treasuryprime, focus: fintech}
+  - {company: "1Password", ats: ashby, slug: 1password, focus: identity}
+  - {company: "Alloy", ats: greenhouse, slug: alloy, focus: identity}
+  - {company: "Arkose Labs", ats: ashby, slug: arkoselabs, focus: identity}
+  - {company: "AuthZed", ats: ashby, slug: authzed, focus: identity}
+  - {company: "Bitwarden", ats: greenhouse, slug: bitwarden, focus: identity}
+  - {company: "Castle", ats: ashby, slug: castle, focus: identity}
+  - {company: "Clerk", ats: ashby, slug: clerk, focus: identity}
+  - {company: "Descope", ats: greenhouse, slug: descope, focus: identity}
+  - {company: "Feedzai", ats: greenhouse, slug: feedzai, focus: identity}
+  - {company: "Forter", ats: greenhouse, slug: forter, focus: identity}
+  - {company: "Incode", ats: greenhouse, slug: incode, focus: identity}
+  - {company: "Jumio", ats: greenhouse, slug: jumio, focus: identity}
+  - {company: "JumpCloud", ats: lever, slug: jumpcloud, focus: identity}
+  - {company: "Okta", ats: greenhouse, slug: okta, focus: identity}
+  - {company: "Persona", ats: ashby, slug: persona, focus: identity}
+  - {company: "Prove", ats: greenhouse, slug: prove, focus: identity}
+  - {company: "Riskified", ats: greenhouse, slug: riskified, focus: identity}
+  - {company: "Sardine", ats: ashby, slug: sardine, focus: identity}
+  - {company: "Sentilink", ats: ashby, slug: sentilink, focus: identity}
+  - {company: "SEON", ats: ashby, slug: seon, focus: identity}
+  - {company: "Sift", ats: ashby, slug: sift, focus: identity}
+  - {company: "Socure", ats: ashby, slug: socure, focus: identity}
+  - {company: "Transmit Security", ats: greenhouse, slug: transmitsecurity, focus: identity}
+  - {company: "Trulioo", ats: ashby, slug: trulioo, focus: identity}
+  - {company: "WorkOS", ats: ashby, slug: workos, focus: identity}
+  - {company: "Abnormal Security", ats: greenhouse, slug: abnormalsecurity, focus: security}
+  - {company: "Censys", ats: greenhouse, slug: censys, focus: security}
+  - {company: "Chainguard", ats: greenhouse, slug: chainguard, focus: security}
+  - {company: "Cloudflare", ats: greenhouse, slug: cloudflare, focus: security}
+  - {company: "Expel", ats: greenhouse, slug: expel, focus: security}
+  - {company: "Horizon3.ai", ats: ashby, slug: horizon3ai, focus: security}
+  - {company: "Huntress", ats: greenhouse, slug: huntress, focus: security}
+  - {company: "Semgrep", ats: ashby, slug: semgrep, focus: security}
+  - {company: "Snyk", ats: ashby, slug: snyk, focus: security}
+  - {company: "Socket", ats: ashby, slug: socket, focus: security}
+  - {company: "Tailscale", ats: greenhouse, slug: tailscale, focus: security}
+  - {company: "Tines", ats: greenhouse, slug: tines, focus: security}
+  - {company: "Vanta", ats: ashby, slug: vanta, focus: security}
+  - {company: "Wiz", ats: greenhouse, slug: wizinc, focus: security}

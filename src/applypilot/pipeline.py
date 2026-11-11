@@ -60,8 +60,18 @@ _UPSTREAM: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 
 def _run_discover(workers: int = 1) -> dict:
-    """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
-    stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    """Stage: Job discovery — company ATS boards, JobSpy, Workday, and smart-extract scrapers."""
+    stats: dict = {"ats_boards": None, "jobspy": None, "workday": None, "smartextract": None}
+
+    # Company ATS boards (Greenhouse / Ashby / Lever APIs): apply-ready, no enrich needed
+    console.print("  [cyan]Company ATS boards...[/cyan]")
+    try:
+        from applypilot.discovery.ats_boards import run_ats_discovery
+        stats["ats_boards"] = run_ats_discovery()
+    except Exception as e:
+        log.error("ATS board discovery failed: %s", e)
+        console.print(f"  [red]ATS boards error:[/red] {e}")
+        stats["ats_boards"] = f"error: {e}"
 
     # JobSpy
     console.print("  [cyan]JobSpy full crawl...[/cyan]")
